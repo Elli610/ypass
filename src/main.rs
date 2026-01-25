@@ -3,15 +3,26 @@
 //! Generates deterministic passwords using:
 //! - YubiKey HMAC-SHA1 challenge-response (slot 1)
 //! - User-provided PIN/password
-//! - Target domain
+//! - Target domain (normalized)
+//! - Optional username (for multi-account support)
+//! - Version number (for password rotation)
 //! - Hardcoded application salt
 //!
 //! Uses Argon2id for key derivation
+//! State file encrypted with ChaCha20-Poly1305
 //!
 //! Supported platforms: macOS, Linux, Windows
 
 use argon2::{Argon2, Params, Version};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Nonce,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
@@ -20,11 +31,12 @@ use zeroize::Zeroizing;
 ///   head -c 32 /dev/urandom | xxd -i   (macOS/Linux)
 ///   or use any secure random generator
 const APP_SALT: [u8; 32] = [
-    0x7a, 0x3f, 0x8b, 0x2c, 0xe1, 0x94, 0x5d, 0x6f,
-    0xb8, 0x0a, 0x4e, 0x73, 0xc2, 0x1b, 0x9d, 0x85,
-    0xf4, 0x67, 0x2e, 0xa9, 0x3c, 0x58, 0xd0, 0x16,
-    0x8f, 0xe5, 0x4b, 0x7d, 0x0c, 0xa2, 0x63, 0x91,
+    0x7a, 0x3f, 0x8b, 0x2c, 0xe1, 0x94, 0x5d, 0x6f, 0xb8, 0x0a, 0x4e, 0x73, 0xc2, 0x1b, 0x9d, 0x85,
+    0xf4, 0x67, 0x2e, 0xa9, 0x3c, 0x58, 0xd0, 0x16, 0x8f, 0xe5, 0x4b, 0x7d, 0x0c, 0xa2, 0x63, 0x91,
 ];
+
+/// Fixed challenge for deriving state file encryption key
+const STATE_KEY_CHALLENGE: &str = "__dpg_state_key__";
 
 /// Password character sets
 const LOWERCASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
@@ -33,11 +45,44 @@ const DIGITS: &[u8] = b"0123456789";
 const SYMBOLS: &[u8] = b"!@#$%^&*()-_=+[]{}|;:,.<>?";
 
 /// All characters combined for password generation
-const ALL_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?";
+const ALL_CHARS: &[u8] =
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?";
 
 const PASSWORD_LENGTH: usize = 32;
 const CLIPBOARD_CLEAR_SECONDS: u64 = 20;
 const YUBIKEY_SLOT: &str = "1";
+
+/// State stored in encrypted file
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct State {
+    domains: HashMap<String, DomainState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DomainState {
+    version: u32,
+    usernames: Vec<String>,
+}
+
+impl Default for DomainState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            usernames: Vec::new(),
+        }
+    }
+}
+
+/// CLI arguments
+#[derive(Debug)]
+struct Args {
+    domain: Option<String>,
+    version_override: Option<u32>,
+    username: Option<String>,
+    add_user: Option<String>,
+    bump_version: bool,
+    list: bool,
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -47,35 +92,87 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
+    let args = parse_args()?;
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} <domain>", args[0]);
-        eprintln!("Example: {} github.com", args[0]);
-        eprintln!();
-        eprintln!("Requirements:");
-        eprintln!("  YubiKey: ykchalresp (brew install ykpers / apt install yubikey-personalization)");
-        eprintln!("  Setup:   ykman otp chalresp --generate 1  (brew install ykman to configure)");
-        eprintln!("  Clipboard:");
-        eprintln!("    macOS:   pbcopy (built-in)");
-        eprintln!("    Linux:   xclip (apt install xclip) or wl-copy (Wayland)");
-        eprintln!("    Windows: clip.exe (built-in)");
-        std::process::exit(1);
-    }
-
-    let domain = &args[1];
-
-    // Step 1: Get YubiKey HMAC-SHA1 response
-    eprint!("Touch your YubiKey...");
+    // Step 1: Get YubiKey response for state decryption
+    eprint!("Touch YubiKey to unlock state...");
     io::stderr().flush()?;
-
-    let yubikey_seed = get_yubikey_response(domain)?;
+    let state_key_seed = get_yubikey_response(STATE_KEY_CHALLENGE)?;
     eprintln!(" OK");
 
-    // Step 2: Get PIN from user (no echo)
+    // Derive state encryption key
+    let state_key = derive_state_key(&state_key_seed)?;
+
+    // Load or create state
+    let mut state = load_state(&state_key).unwrap_or_default();
+    let mut state_modified = false;
+
+    // Handle --list command
+    if args.list {
+        list_all_entries(&state);
+        return Ok(());
+    }
+
+    // Domain is required for all other operations
+    let domain = args.domain.ok_or("Domain is required")?;
+    let normalized_domain = normalize_domain(&domain);
+
+    // Handle --add-user command
+    if let Some(username) = args.add_user {
+        add_username(&mut state, &normalized_domain, &username);
+        save_state(&state, &state_key)?;
+        eprintln!("Added username '{}' to domain '{}'", username, normalized_domain);
+        return Ok(());
+    }
+
+    // Handle --bump-version command
+    if args.bump_version {
+        let current = get_version(&state, &normalized_domain);
+        set_version(&mut state, &normalized_domain, current + 1);
+        save_state(&state, &state_key)?;
+        eprintln!(
+            "Bumped version for '{}' from {} to {}",
+            normalized_domain,
+            current,
+            current + 1
+        );
+        return Ok(());
+    }
+
+    // Determine username
+    let username = if let Some(u) = args.username {
+        // Username provided via CLI
+        if !get_usernames(&state, &normalized_domain).contains(&u) {
+            // Auto-add new username
+            add_username(&mut state, &normalized_domain, &u);
+            state_modified = true;
+        }
+        u
+    } else {
+        // Interactive selection or domain-only mode
+        let usernames = get_usernames(&state, &normalized_domain);
+        if usernames.is_empty() {
+            // Domain-only mode (backward compatible)
+            String::new()
+        } else {
+            select_username(&usernames, &normalized_domain, &mut state, &mut state_modified)?
+        }
+    };
+
+    // Determine version
+    let version = args
+        .version_override
+        .unwrap_or_else(|| get_version(&state, &normalized_domain));
+
+    // Step 2: Get YubiKey response for password generation
+    eprint!("Touch YubiKey for password...");
+    io::stderr().flush()?;
+    let yubikey_seed = get_yubikey_response(&normalized_domain)?;
+    eprintln!(" OK");
+
+    // Step 3: Get PIN from user (no echo)
     eprint!("Enter PIN: ");
     io::stderr().flush()?;
-
     let pin = read_password_no_echo()?;
     eprintln!();
 
@@ -83,19 +180,373 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("PIN cannot be empty".into());
     }
 
-    // Step 3: Generate password using Argon2id
-    let password = generate_password(&yubikey_seed, &pin, domain)?;
+    // Step 4: Generate password using Argon2id
+    let password = generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
 
-    // Step 4: Copy to clipboard and schedule clear
+    // Step 5: Save state if modified
+    if state_modified {
+        save_state(&state, &state_key)?;
+    }
+
+    // Step 6: Copy to clipboard and schedule clear
     copy_to_clipboard_with_clear(&password)?;
 
-    // Step 5: Display password (for terminal use)
+    // Step 7: Display password (for terminal use)
     println!("{}", &*password);
 
-    eprintln!("Password copied to clipboard. Will be cleared in {CLIPBOARD_CLEAR_SECONDS} seconds.");
+    let info = if username.is_empty() {
+        format!("domain={}, v{}", normalized_domain, version)
+    } else {
+        format!(
+            "domain={}, user={}, v{}",
+            normalized_domain, username, version
+        )
+    };
+    eprintln!(
+        "Password copied to clipboard ({}). Will be cleared in {CLIPBOARD_CLEAR_SECONDS} seconds.",
+        info
+    );
 
     Ok(())
 }
+
+/// Parse command line arguments
+fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() == 1 {
+        print_usage(&args[0]);
+        std::process::exit(1);
+    }
+
+    let mut domain = None;
+    let mut version_override = None;
+    let mut username = None;
+    let mut add_user = None;
+    let mut bump_version = false;
+    let mut list = false;
+
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            "-v" | "--version" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--version requires a number".into());
+                }
+                version_override = Some(args[i].parse()?);
+            }
+            "-u" | "--user" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--user requires a username".into());
+                }
+                username = Some(args[i].clone());
+            }
+            "--add-user" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--add-user requires a username".into());
+                }
+                add_user = Some(args[i].clone());
+            }
+            "--bump-version" => {
+                bump_version = true;
+            }
+            "--list" => {
+                list = true;
+            }
+            "-h" | "--help" => {
+                print_usage(&args[0]);
+                std::process::exit(0);
+            }
+            _ => {
+                if arg.starts_with('-') {
+                    return Err(format!("Unknown option: {}", arg).into());
+                }
+                if domain.is_some() {
+                    return Err("Only one domain allowed".into());
+                }
+                domain = Some(arg.clone());
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Args {
+        domain,
+        version_override,
+        username,
+        add_user,
+        bump_version,
+        list,
+    })
+}
+
+fn print_usage(program: &str) {
+    eprintln!("Usage: {} <domain> [options]", program);
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -v, --version <n>     Use specific version (default: from state or 1)");
+    eprintln!("  -u, --user <name>     Use specific username (skip interactive)");
+    eprintln!("  --add-user <name>     Add username to domain");
+    eprintln!("  --bump-version        Increment version for domain");
+    eprintln!("  --list                List all domains and usernames");
+    eprintln!("  -h, --help            Show this help");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  {} github.com", program);
+    eprintln!("  {} github.com -u myuser", program);
+    eprintln!("  {} gmail.com --add-user work@gmail.com", program);
+    eprintln!("  {} github.com --bump-version", program);
+    eprintln!("  {} github.com -v 2", program);
+    eprintln!("  {} --list", program);
+    eprintln!();
+    eprintln!("Requirements:");
+    eprintln!("  YubiKey: ykchalresp (brew install ykpers / apt install yubikey-personalization)");
+    eprintln!("  Setup:   ykman otp chalresp --generate 1  (brew install ykman to configure)");
+}
+
+/// Normalize domain for consistent password generation
+fn normalize_domain(input: &str) -> String {
+    let mut domain = input.trim().to_lowercase();
+
+    // Remove protocol prefixes
+    if let Some(rest) = domain.strip_prefix("https://") {
+        domain = rest.to_string();
+    } else if let Some(rest) = domain.strip_prefix("http://") {
+        domain = rest.to_string();
+    }
+
+    // Remove www prefix
+    if let Some(rest) = domain.strip_prefix("www.") {
+        domain = rest.to_string();
+    }
+
+    // Remove trailing slashes and paths
+    if let Some(pos) = domain.find('/') {
+        domain.truncate(pos);
+    }
+
+    domain
+}
+
+// === State Management ===
+
+fn get_state_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    PathBuf::from(home)
+        .join(".config")
+        .join("dpg")
+        .join("state.enc")
+}
+
+fn derive_state_key(yubikey_response: &[u8]) -> Result<Zeroizing<[u8; 32]>, Box<dyn std::error::Error>> {
+    let params = Params::new(65536, 3, 4, Some(32))?;
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+
+    let salt = b"dpg_state_key_derivation";
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon2.hash_password_into(yubikey_response, salt, &mut *key)?;
+
+    Ok(key)
+}
+
+fn load_state(key: &[u8; 32]) -> Result<State, Box<dyn std::error::Error>> {
+    let path = get_state_path();
+    if !path.exists() {
+        return Ok(State::default());
+    }
+
+    let encrypted = fs::read(&path)?;
+    if encrypted.len() < 12 {
+        return Err("Invalid state file".into());
+    }
+
+    // First 12 bytes are nonce
+    let nonce = Nonce::from_slice(&encrypted[..12]);
+    let ciphertext = &encrypted[12..];
+
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "Invalid key length")?;
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Failed to decrypt state file")?;
+
+    let state: State = serde_json::from_slice(&plaintext)?;
+    Ok(state)
+}
+
+fn save_state(state: &State, key: &[u8; 32]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = get_state_path();
+
+    // Create directory if needed
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let plaintext = serde_json::to_vec(state)?;
+
+    // Generate random nonce
+    let mut nonce_bytes = [0u8; 12];
+    getrandom(&mut nonce_bytes)?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "Invalid key length")?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_slice())
+        .map_err(|_| "Failed to encrypt state")?;
+
+    // Write nonce + ciphertext
+    let mut output = Vec::with_capacity(12 + ciphertext.len());
+    output.extend_from_slice(&nonce_bytes);
+    output.extend_from_slice(&ciphertext);
+
+    fs::write(&path, output)?;
+    Ok(())
+}
+
+fn getrandom(buf: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::io::Read;
+        let mut f = File::open("/dev/urandom")?;
+        f.read_exact(buf)?;
+    }
+    #[cfg(windows)]
+    {
+        // Use RtlGenRandom via advapi32
+        use std::ptr;
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn SystemFunction036(buffer: *mut u8, size: u32) -> u8;
+        }
+        unsafe {
+            if SystemFunction036(buf.as_mut_ptr(), buf.len() as u32) == 0 {
+                return Err("RtlGenRandom failed".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn get_usernames(state: &State, domain: &str) -> Vec<String> {
+    state
+        .domains
+        .get(domain)
+        .map(|d| d.usernames.clone())
+        .unwrap_or_default()
+}
+
+fn get_version(state: &State, domain: &str) -> u32 {
+    state.domains.get(domain).map(|d| d.version).unwrap_or(1)
+}
+
+fn add_username(state: &mut State, domain: &str, username: &str) {
+    let entry = state.domains.entry(domain.to_string()).or_default();
+    if !entry.usernames.contains(&username.to_string()) {
+        entry.usernames.push(username.to_string());
+    }
+}
+
+fn set_version(state: &mut State, domain: &str, version: u32) {
+    state.domains.entry(domain.to_string()).or_default().version = version;
+}
+
+fn list_all_entries(state: &State) {
+    if state.domains.is_empty() {
+        eprintln!("No domains stored.");
+        return;
+    }
+
+    let mut domains: Vec<_> = state.domains.iter().collect();
+    domains.sort_by_key(|(k, _)| *k);
+
+    for (domain, entry) in domains {
+        println!("{} (v{})", domain, entry.version);
+        if entry.usernames.is_empty() {
+            println!("  (domain-only mode)");
+        } else {
+            for username in &entry.usernames {
+                println!("  - {}", username);
+            }
+        }
+    }
+}
+
+fn select_username(
+    usernames: &[String],
+    domain: &str,
+    state: &mut State,
+    state_modified: &mut bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    eprintln!();
+    eprintln!("Usernames for '{}':", domain);
+    for (i, u) in usernames.iter().enumerate() {
+        eprintln!("  [{}] {}", i + 1, u);
+    }
+    eprintln!("  [n] Add new username");
+    eprintln!("  [d] Use domain-only (no username)");
+    eprintln!();
+    eprint!("Select [1]: ");
+    io::stderr().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() || input == "1" {
+        return Ok(usernames[0].clone());
+    }
+
+    if input == "d" || input == "D" {
+        return Ok(String::new());
+    }
+
+    if input == "n" || input == "N" {
+        eprint!("Enter new username: ");
+        io::stderr().flush()?;
+        let mut new_user = String::new();
+        io::stdin().read_line(&mut new_user)?;
+        let new_user = new_user.trim().to_string();
+        if new_user.is_empty() {
+            return Err("Username cannot be empty".into());
+        }
+        add_username(state, domain, &new_user);
+        *state_modified = true;
+        return Ok(new_user);
+    }
+
+    // Try to parse as number
+    if let Ok(n) = input.parse::<usize>() {
+        if n >= 1 && n <= usernames.len() {
+            return Ok(usernames[n - 1].clone());
+        }
+    }
+
+    // Try prefix match
+    let matches: Vec<_> = usernames
+        .iter()
+        .filter(|u| u.to_lowercase().starts_with(&input.to_lowercase()))
+        .collect();
+
+    if matches.len() == 1 {
+        return Ok(matches[0].clone());
+    } else if matches.len() > 1 {
+        eprintln!("Ambiguous match. Matches: {:?}", matches);
+        return Err("Ambiguous username".into());
+    }
+
+    Err(format!("Invalid selection: {}", input).into())
+}
+
+// === YubiKey and Password Generation ===
 
 /// Detect current operating system
 fn detect_os() -> &'static str {
@@ -127,11 +578,7 @@ fn command_exists(cmd: &str) -> bool {
 }
 
 /// Get HMAC-SHA1 challenge-response from YubiKey
-/// Uses ykchalresp from ykpers package (the correct tool for challenge-response)
 fn get_yubikey_response(challenge: &str) -> Result<Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
-    // ykchalresp is the tool for HMAC-SHA1 challenge-response
-    // -1 or -2: slot number
-    // -H: output as hex
     if command_exists("ykchalresp") {
         let slot_flag = format!("-{}", YUBIKEY_SLOT);
         let output = Command::new("ykchalresp")
@@ -141,9 +588,7 @@ fn get_yubikey_response(challenge: &str) -> Result<Zeroizing<Vec<u8>>, Box<dyn s
             .output()?;
 
         if output.status.success() {
-            let hex_response = String::from_utf8(output.stdout)?
-                .trim()
-                .to_string();
+            let hex_response = String::from_utf8(output.stdout)?.trim().to_string();
             if !hex_response.is_empty() {
                 let bytes = hex_decode(&hex_response)?;
                 return Ok(Zeroizing::new(bytes));
@@ -154,27 +599,32 @@ fn get_yubikey_response(challenge: &str) -> Result<Zeroizing<Vec<u8>>, Box<dyn s
         return Err(format!("YubiKey challenge-response failed: {}", stderr.trim()).into());
     }
 
-    // Tool not found - provide helpful diagnostics
     let os = detect_os();
     let install_hint = match os {
         "macos" => "Install: brew install ykpers",
-        "windows" => "Install: Download from https://developers.yubico.com/yubikey-personalization/Releases/",
+        "windows" => {
+            "Install: Download from https://developers.yubico.com/yubikey-personalization/Releases/"
+        }
         _ => "Install: apt install yubikey-personalization",
     };
 
-    let setup_hint = format!("\
+    let setup_hint = format!(
+        "\
 To configure HMAC-SHA1 challenge-response on slot {slot}:
   ykman otp chalresp --generate {slot}
   (requires: brew install ykman / pip install yubikey-manager)
 
 To verify slot {slot} is configured:
-  ykman otp info", slot = YUBIKEY_SLOT);
+  ykman otp info",
+        slot = YUBIKEY_SLOT
+    );
 
     Err(format!(
         "ykchalresp not found in PATH.\n\n\
          {install_hint}\n\n\
          {setup_hint}"
-    ).into())
+    )
+    .into())
 }
 
 /// Read password from terminal without echoing characters
@@ -192,7 +642,6 @@ fn read_password_no_echo() -> Result<Zeroizing<String>, Box<dyn std::error::Erro
 
 #[cfg(not(target_os = "windows"))]
 fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
-    // Save current terminal settings
     let output = Command::new("stty")
         .args(["-g"])
         .stdin(Stdio::inherit())
@@ -200,17 +649,14 @@ fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>>
 
     let saved_settings = String::from_utf8(output.stdout)?.trim().to_string();
 
-    // Disable echo
     Command::new("stty")
         .args(["-echo"])
         .stdin(Stdio::inherit())
         .status()?;
 
-    // Read the password
     let mut password = Zeroizing::new(String::new());
     let result = io::stdin().read_line(&mut password);
 
-    // Always restore terminal settings, even on error
     let _ = Command::new("stty")
         .arg(&saved_settings)
         .stdin(Stdio::inherit())
@@ -218,7 +664,6 @@ fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>>
 
     result?;
 
-    // Remove trailing newline
     if password.ends_with('\n') {
         password.pop();
     }
@@ -231,14 +676,7 @@ fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>>
 
 #[cfg(target_os = "windows")]
 fn read_password_windows() -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
-    use std::os::windows::io::AsRawHandle;
-
-    // On Windows, we use a simple character-by-character read
-    // In production, consider using the windows-sys crate for proper console mode handling
     let mut password = Zeroizing::new(String::new());
-
-    // Fallback: read line normally (echo will show, but works)
-    // For proper no-echo on Windows, would need winapi/windows-sys crate
     io::stdin().read_line(&mut password)?;
 
     if password.ends_with('\n') {
@@ -256,33 +694,34 @@ fn generate_password(
     yubikey_seed: &[u8],
     pin: &str,
     domain: &str,
+    username: &str,
+    version: u32,
 ) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
-    // Combine all inputs: yubikey_seed || pin || domain || app_salt
+    // Combine all inputs: yubikey_seed || pin || domain || username || version || app_salt
     let mut input = Zeroizing::new(Vec::new());
     input.extend_from_slice(yubikey_seed);
     input.extend_from_slice(pin.as_bytes());
     input.extend_from_slice(domain.as_bytes());
+    input.extend_from_slice(username.as_bytes());
+    input.extend_from_slice(&version.to_le_bytes());
     input.extend_from_slice(&APP_SALT);
 
     // Argon2id parameters (OWASP recommendations)
-    // - Memory: 64 MiB (65536 KiB)
-    // - Iterations: 3
-    // - Parallelism: 4
     let params = Params::new(
-        65536,   // m_cost: 64 MiB
-        3,       // t_cost: 3 iterations
-        4,       // p_cost: 4 parallel lanes
-        Some(64) // output length: 64 bytes
+        65536, // m_cost: 64 MiB
+        3,     // t_cost: 3 iterations
+        4,     // p_cost: 4 parallel lanes
+        Some(64),
     )?;
 
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
-    // Use domain + app_salt prefix as salt for Argon2
+    // Use domain + username + app_salt prefix as salt for Argon2
     let mut salt = Zeroizing::new(Vec::new());
     salt.extend_from_slice(domain.as_bytes());
+    salt.extend_from_slice(username.as_bytes());
     salt.extend_from_slice(&APP_SALT[..16]);
 
-    // Ensure salt is at least 8 bytes (Argon2 requirement)
     while salt.len() < 8 {
         salt.push(0x00);
     }
@@ -290,7 +729,6 @@ fn generate_password(
     let mut derived_key = Zeroizing::new(vec![0u8; 64]);
     argon2.hash_password_into(&input, &salt, &mut derived_key)?;
 
-    // Convert derived bytes to password string
     let password = bytes_to_password(&derived_key)?;
 
     Ok(password)
@@ -301,13 +739,11 @@ fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<String>, Box<dyn std::err
     let mut password = Zeroizing::new(String::with_capacity(PASSWORD_LENGTH));
     let all_chars_len = ALL_CHARS.len();
 
-    // Generate password characters
     for i in 0..PASSWORD_LENGTH {
         let idx = bytes[i] as usize % all_chars_len;
         password.push(ALL_CHARS[idx] as char);
     }
 
-    // Ensure at least one character from each category
     let mut password_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(password.as_bytes().to_vec());
 
     let checks: [(fn(&u8) -> bool, &[u8], usize); 4] = [
@@ -343,23 +779,17 @@ fn copy_to_clipboard_with_clear(password: &str) -> Result<(), Box<dyn std::error
 }
 
 fn copy_clipboard_macos(password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Copy using pbcopy
-    let mut child = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()?;
+    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(password.as_bytes())?;
     }
     child.wait()?;
 
-    // Schedule clear using background process
     Command::new("sh")
         .args([
             "-c",
-            &format!(
-                "sleep {CLIPBOARD_CLEAR_SECONDS} && echo -n '' | pbcopy"
-            ),
+            &format!("sleep {CLIPBOARD_CLEAR_SECONDS} && echo -n '' | pbcopy"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -370,9 +800,12 @@ fn copy_clipboard_macos(password: &str) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn copy_clipboard_linux(password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Try xclip first, then wl-copy for Wayland
     let (copy_cmd, copy_args, clear_cmd) = if command_exists("xclip") {
-        ("xclip", vec!["-sel", "clipboard"], "echo -n '' | xclip -sel clipboard")
+        (
+            "xclip",
+            vec!["-sel", "clipboard"],
+            "echo -n '' | xclip -sel clipboard",
+        )
     } else if command_exists("wl-copy") {
         ("wl-copy", vec![], "wl-copy ''")
     } else {
@@ -389,7 +822,6 @@ fn copy_clipboard_linux(password: &str) -> Result<(), Box<dyn std::error::Error>
     }
     child.wait()?;
 
-    // Schedule clear
     Command::new("sh")
         .args([
             "-c",
@@ -404,18 +836,13 @@ fn copy_clipboard_linux(password: &str) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn copy_clipboard_windows(password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Copy using clip.exe
-    let mut child = Command::new("clip")
-        .stdin(Stdio::piped())
-        .spawn()?;
+    let mut child = Command::new("clip").stdin(Stdio::piped()).spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(password.as_bytes())?;
     }
     child.wait()?;
 
-    // Schedule clear using PowerShell in background
-    // Note: This creates a visible PowerShell window briefly
     Command::new("cmd")
         .args([
             "/C",
@@ -456,10 +883,19 @@ mod tests {
         assert_eq!(hex_decode("00").unwrap(), vec![0u8]);
         assert_eq!(hex_decode("ff").unwrap(), vec![255u8]);
         assert_eq!(hex_decode("0102").unwrap(), vec![1u8, 2u8]);
-        assert_eq!(
-            hex_decode("7a3f8b2c").unwrap(),
-            vec![0x7a, 0x3f, 0x8b, 0x2c]
-        );
+        assert_eq!(hex_decode("7a3f8b2c").unwrap(), vec![0x7a, 0x3f, 0x8b, 0x2c]);
+    }
+
+    #[test]
+    fn test_normalize_domain() {
+        assert_eq!(normalize_domain("GitHub.com"), "github.com");
+        assert_eq!(normalize_domain("GITHUB.COM"), "github.com");
+        assert_eq!(normalize_domain("https://github.com"), "github.com");
+        assert_eq!(normalize_domain("http://github.com"), "github.com");
+        assert_eq!(normalize_domain("www.github.com"), "github.com");
+        assert_eq!(normalize_domain("https://www.github.com/path"), "github.com");
+        assert_eq!(normalize_domain("  github.com  "), "github.com");
+        assert_eq!(normalize_domain("github.com/"), "github.com");
     }
 
     #[test]
@@ -467,12 +903,51 @@ mod tests {
         let seed = vec![0x01, 0x02, 0x03, 0x04];
         let pin = "test123";
         let domain = "example.com";
+        let username = "user@example.com";
+        let version = 1;
 
-        let pass1 = generate_password(&seed, pin, domain).unwrap();
-        let pass2 = generate_password(&seed, pin, domain).unwrap();
+        let pass1 = generate_password(&seed, pin, domain, username, version).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, username, version).unwrap();
 
         assert_eq!(*pass1, *pass2);
         assert_eq!(pass1.len(), PASSWORD_LENGTH);
+    }
+
+    #[test]
+    fn test_password_differs_by_username() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04];
+        let pin = "test123";
+        let domain = "example.com";
+        let version = 1;
+
+        let pass1 = generate_password(&seed, pin, domain, "user1", version).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, "user2", version).unwrap();
+
+        assert_ne!(*pass1, *pass2);
+    }
+
+    #[test]
+    fn test_password_differs_by_version() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04];
+        let pin = "test123";
+        let domain = "example.com";
+        let username = "user";
+
+        let pass1 = generate_password(&seed, pin, domain, username, 1).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, username, 2).unwrap();
+
+        assert_ne!(*pass1, *pass2);
+    }
+
+    #[test]
+    fn test_password_backward_compatible() {
+        // Empty username should work (domain-only mode)
+        let seed = vec![0x01, 0x02, 0x03, 0x04];
+        let pin = "test123";
+        let domain = "example.com";
+
+        let pass = generate_password(&seed, pin, domain, "", 1).unwrap();
+        assert_eq!(pass.len(), PASSWORD_LENGTH);
     }
 
     #[test]
@@ -481,11 +956,25 @@ mod tests {
         let pin = "testpin";
         let domain = "test.com";
 
-        let password = generate_password(&seed, pin, domain).unwrap();
+        let password = generate_password(&seed, pin, domain, "", 1).unwrap();
 
         assert!(password.chars().any(|c| c.is_ascii_lowercase()));
         assert!(password.chars().any(|c| c.is_ascii_uppercase()));
         assert!(password.chars().any(|c| c.is_ascii_digit()));
         assert!(password.chars().any(|c| SYMBOLS.contains(&(c as u8))));
+    }
+
+    #[test]
+    fn test_state_serialization() {
+        let mut state = State::default();
+        add_username(&mut state, "github.com", "user1");
+        add_username(&mut state, "github.com", "user2");
+        set_version(&mut state, "github.com", 2);
+
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: State = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(get_usernames(&loaded, "github.com"), vec!["user1", "user2"]);
+        assert_eq!(get_version(&loaded, "github.com"), 2);
     }
 }

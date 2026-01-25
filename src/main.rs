@@ -18,7 +18,14 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Editor, Helper};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -82,6 +89,8 @@ struct Args {
     add_user: Option<String>,
     bump_version: bool,
     list: bool,
+    generate_completions: Option<String>,
+    interactive: bool,
 }
 
 fn main() {
@@ -93,6 +102,12 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
+
+    // Handle --generate-completions (no YubiKey needed)
+    if let Some(shell) = &args.generate_completions {
+        print_completions(shell)?;
+        return Ok(());
+    }
 
     // Step 1: Get YubiKey response for state decryption
     eprint!("Touch YubiKey to unlock state...");
@@ -107,15 +122,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = load_state(&state_key).unwrap_or_default();
     let mut state_modified = false;
 
+    // Update domain cache for shell completions
+    update_domain_cache(&state);
+
     // Handle --list command
     if args.list {
         list_all_entries(&state);
         return Ok(());
     }
 
-    // Domain is required for all other operations
-    let domain = args.domain.ok_or("Domain is required")?;
-    let normalized_domain = normalize_domain(&domain);
+    // Domain selection: interactive if not provided or -i flag
+    let normalized_domain = if args.domain.is_none() || args.interactive {
+        if state.domains.is_empty() {
+            eprint!("Enter domain: ");
+            io::stderr().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+            if input.is_empty() {
+                return Err("Domain is required".into());
+            }
+            normalize_domain(input)
+        } else {
+            select_domain(&state)?
+        }
+    } else {
+        normalize_domain(args.domain.as_ref().unwrap())
+    };
 
     // Handle --add-user command
     if let Some(username) = args.add_user {
@@ -214,17 +247,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() == 1 {
-        print_usage(&args[0]);
-        std::process::exit(1);
-    }
-
     let mut domain = None;
     let mut version_override = None;
     let mut username = None;
     let mut add_user = None;
     let mut bump_version = false;
     let mut list = false;
+    let mut generate_completions = None;
+    let mut interactive = false;
+
+    // No args = interactive mode
+    if args.len() == 1 {
+        return Ok(Args {
+            domain: None,
+            version_override: None,
+            username: None,
+            add_user: None,
+            bump_version: false,
+            list: false,
+            generate_completions: None,
+            interactive: true,
+        });
+    }
 
     let mut i = 1;
     while i < args.len() {
@@ -257,6 +301,16 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--list" => {
                 list = true;
             }
+            "-i" | "--interactive" => {
+                interactive = true;
+            }
+            "--generate-completions" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--generate-completions requires shell name (bash, zsh, fish)".into());
+                }
+                generate_completions = Some(args[i].clone());
+            }
             "-h" | "--help" => {
                 print_usage(&args[0]);
                 std::process::exit(0);
@@ -281,27 +335,38 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         add_user,
         bump_version,
         list,
+        generate_completions,
+        interactive,
     })
 }
 
 fn print_usage(program: &str) {
-    eprintln!("Usage: {} <domain> [options]", program);
+    eprintln!("Usage: {} [domain] [options]", program);
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -v, --version <n>     Use specific version (default: from state or 1)");
+    eprintln!("  -v, --version <n>     Use specific version (default: latest from state)");
     eprintln!("  -u, --user <name>     Use specific username (skip interactive)");
+    eprintln!("  -i, --interactive     Interactive domain selection");
     eprintln!("  --add-user <name>     Add username to domain");
     eprintln!("  --bump-version        Increment version for domain");
     eprintln!("  --list                List all domains and usernames");
+    eprintln!("  --generate-completions <shell>");
+    eprintln!("                        Generate shell completions (bash, zsh, fish)");
     eprintln!("  -h, --help            Show this help");
     eprintln!();
     eprintln!("Examples:");
+    eprintln!("  {}                    Interactive mode (select domain)", program);
     eprintln!("  {} github.com", program);
     eprintln!("  {} github.com -u myuser", program);
     eprintln!("  {} gmail.com --add-user work@gmail.com", program);
     eprintln!("  {} github.com --bump-version", program);
     eprintln!("  {} github.com -v 2", program);
     eprintln!("  {} --list", program);
+    eprintln!();
+    eprintln!("Shell completions:");
+    eprintln!("  {} --generate-completions bash >> ~/.bashrc", program);
+    eprintln!("  {} --generate-completions zsh >> ~/.zshrc", program);
+    eprintln!("  {} --generate-completions fish > ~/.config/fish/completions/{}.fish", program, program);
     eprintln!();
     eprintln!("Requirements:");
     eprintln!("  YubiKey: ykchalresp (brew install ykpers / apt install yubikey-personalization)");
@@ -480,6 +545,256 @@ fn list_all_entries(state: &State) {
     }
 }
 
+// === Rustyline Completers ===
+
+struct StringCompleter {
+    candidates: Vec<String>,
+}
+
+impl StringCompleter {
+    fn new(candidates: Vec<String>) -> Self {
+        Self { candidates }
+    }
+}
+
+impl Completer for StringCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let input = &line[..pos].to_lowercase();
+        let matches: Vec<Pair> = self
+            .candidates
+            .iter()
+            .filter(|c| c.to_lowercase().starts_with(input))
+            .map(|c| Pair {
+                display: c.clone(),
+                replacement: c.clone(),
+            })
+            .collect();
+        Ok((0, matches))
+    }
+}
+
+impl Hinter for StringCompleter {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
+        if line.is_empty() || pos < line.len() {
+            return None;
+        }
+        let input = line.to_lowercase();
+        self.candidates
+            .iter()
+            .find(|c| c.to_lowercase().starts_with(&input) && c.len() > line.len())
+            .map(|c| c[line.len()..].to_string())
+    }
+}
+
+impl Highlighter for StringCompleter {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        // Gray color for hints
+        Cow::Owned(format!("\x1b[90m{}\x1b[0m", hint))
+    }
+}
+
+impl Validator for StringCompleter {}
+impl Helper for StringCompleter {}
+
+fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
+    let mut domains: Vec<String> = state.domains.keys().cloned().collect();
+    domains.sort();
+
+    eprintln!();
+    eprintln!("Stored domains (Tab to complete):");
+    for (i, domain) in domains.iter().enumerate() {
+        let entry = state.domains.get(domain).unwrap();
+        let user_count = entry.usernames.len();
+        let user_info = if user_count == 0 {
+            String::new()
+        } else {
+            format!(" ({} user{})", user_count, if user_count == 1 { "" } else { "s" })
+        };
+        eprintln!("  [{}] {}{}", i + 1, domain, user_info);
+    }
+    eprintln!();
+
+    let completer = StringCompleter::new(domains.clone());
+    let mut rl = Editor::new()?;
+    rl.set_helper(Some(completer));
+
+    let input = match rl.readline("Domain: ") {
+        Ok(line) => line.trim().to_string(),
+        Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+            return Err("Cancelled".into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if input.is_empty() {
+        return Err("No domain selected".into());
+    }
+
+    // Try to parse as number
+    if let Ok(n) = input.parse::<usize>() {
+        if n >= 1 && n <= domains.len() {
+            return Ok(domains[n - 1].clone());
+        }
+    }
+
+    // Check if it's an exact match
+    if domains.iter().any(|d| d.to_lowercase() == input.to_lowercase()) {
+        return Ok(normalize_domain(&input));
+    }
+
+    // Check for prefix match
+    let matches: Vec<_> = domains
+        .iter()
+        .filter(|d| d.to_lowercase().starts_with(&input.to_lowercase()))
+        .collect();
+
+    if matches.len() == 1 {
+        return Ok(matches[0].clone());
+    }
+
+    // Treat as new domain
+    Ok(normalize_domain(&input))
+}
+
+// === Domain Cache for Shell Completions ===
+
+fn get_cache_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    PathBuf::from(home)
+        .join(".config")
+        .join("dpg")
+        .join("domains.cache")
+}
+
+fn update_domain_cache(state: &State) {
+    let path = get_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let mut domains: Vec<&str> = state.domains.keys().map(|s| s.as_str()).collect();
+    domains.sort();
+    let content = domains.join("\n");
+    let _ = fs::write(&path, content);
+}
+
+fn print_completions(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let cache_path = get_cache_path();
+    let cache_path_str = cache_path.to_string_lossy();
+
+    match shell.to_lowercase().as_str() {
+        "bash" => {
+            println!(r#"# password-generator bash completion
+_password_generator_completions() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    local prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+
+    # Options
+    local opts="-v --version -u --user -i --interactive --add-user --bump-version --list --generate-completions -h --help"
+
+    case "$prev" in
+        -v|--version)
+            return 0
+            ;;
+        -u|--user|--add-user)
+            return 0
+            ;;
+        --generate-completions)
+            COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
+            return 0
+            ;;
+    esac
+
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+    else
+        # Complete domains from cache
+        if [[ -f "{cache_path}" ]]; then
+            COMPREPLY=($(compgen -W "$(cat "{cache_path}")" -- "$cur"))
+        fi
+    fi
+}}
+complete -F _password_generator_completions password-generator
+"#, cache_path = cache_path_str);
+        }
+        "zsh" => {
+            println!(r#"# password-generator zsh completion
+_password_generator() {{
+    local -a domains
+    local cache_file="{cache_path}"
+
+    _arguments \
+        '-v[Use specific version]:version:' \
+        '--version[Use specific version]:version:' \
+        '-u[Use specific username]:username:' \
+        '--user[Use specific username]:username:' \
+        '-i[Interactive domain selection]' \
+        '--interactive[Interactive domain selection]' \
+        '--add-user[Add username to domain]:username:' \
+        '--bump-version[Increment version for domain]' \
+        '--list[List all domains and usernames]' \
+        '--generate-completions[Generate shell completions]:shell:(bash zsh fish)' \
+        '-h[Show help]' \
+        '--help[Show help]' \
+        '1:domain:->domains'
+
+    case $state in
+        domains)
+            if [[ -f "$cache_file" ]]; then
+                domains=(${{(f)"$(< $cache_file)"}})
+                _describe 'domain' domains
+            fi
+            ;;
+    esac
+}}
+compdef _password_generator password-generator
+"#, cache_path = cache_path_str);
+        }
+        "fish" => {
+            println!(r#"# password-generator fish completion
+function __fish_password_generator_domains
+    if test -f "{cache_path}"
+        cat "{cache_path}"
+    end
+end
+
+# Disable file completion
+complete -c password-generator -f
+
+# Options
+complete -c password-generator -s v -l version -d 'Use specific version' -x
+complete -c password-generator -s u -l user -d 'Use specific username' -x
+complete -c password-generator -s i -l interactive -d 'Interactive domain selection'
+complete -c password-generator -l add-user -d 'Add username to domain' -x
+complete -c password-generator -l bump-version -d 'Increment version for domain'
+complete -c password-generator -l list -d 'List all domains and usernames'
+complete -c password-generator -l generate-completions -d 'Generate shell completions' -xa 'bash zsh fish'
+complete -c password-generator -s h -l help -d 'Show help'
+
+# Domain completion
+complete -c password-generator -n '__fish_is_first_token' -xa '(__fish_password_generator_domains)'
+"#, cache_path = cache_path_str);
+        }
+        _ => {
+            return Err(format!("Unknown shell: {}. Supported: bash, zsh, fish", shell).into());
+        }
+    }
+
+    Ok(())
+}
+
 fn select_username(
     usernames: &[String],
     domain: &str,
@@ -487,40 +802,33 @@ fn select_username(
     state_modified: &mut bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     eprintln!();
-    eprintln!("Usernames for '{}':", domain);
+    eprintln!("Usernames for '{}' (Tab to complete):", domain);
     for (i, u) in usernames.iter().enumerate() {
         eprintln!("  [{}] {}", i + 1, u);
     }
-    eprintln!("  [n] Add new username");
-    eprintln!("  [d] Use domain-only (no username)");
+    eprintln!("  Enter 'd' for domain-only mode");
     eprintln!();
-    eprint!("Select [1]: ");
-    io::stderr().flush()?;
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
+    let completer = StringCompleter::new(usernames.to_vec());
+    let mut rl = Editor::new()?;
+    rl.set_helper(Some(completer));
 
-    if input.is_empty() || input == "1" {
+    let input = match rl.readline("Username: ") {
+        Ok(line) => line.trim().to_string(),
+        Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+            return Err("Cancelled".into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Empty input = first username (default)
+    if input.is_empty() {
         return Ok(usernames[0].clone());
     }
 
+    // Domain-only mode
     if input == "d" || input == "D" {
         return Ok(String::new());
-    }
-
-    if input == "n" || input == "N" {
-        eprint!("Enter new username: ");
-        io::stderr().flush()?;
-        let mut new_user = String::new();
-        io::stdin().read_line(&mut new_user)?;
-        let new_user = new_user.trim().to_string();
-        if new_user.is_empty() {
-            return Err("Username cannot be empty".into());
-        }
-        add_username(state, domain, &new_user);
-        *state_modified = true;
-        return Ok(new_user);
     }
 
     // Try to parse as number
@@ -530,7 +838,12 @@ fn select_username(
         }
     }
 
-    // Try prefix match
+    // Exact match (case-insensitive)
+    if let Some(matched) = usernames.iter().find(|u| u.to_lowercase() == input.to_lowercase()) {
+        return Ok(matched.clone());
+    }
+
+    // Prefix match
     let matches: Vec<_> = usernames
         .iter()
         .filter(|u| u.to_lowercase().starts_with(&input.to_lowercase()))
@@ -538,12 +851,12 @@ fn select_username(
 
     if matches.len() == 1 {
         return Ok(matches[0].clone());
-    } else if matches.len() > 1 {
-        eprintln!("Ambiguous match. Matches: {:?}", matches);
-        return Err("Ambiguous username".into());
     }
 
-    Err(format!("Invalid selection: {}", input).into())
+    // No match - treat as new username
+    add_username(state, domain, &input);
+    *state_modified = true;
+    Ok(input)
 }
 
 // === YubiKey and Password Generation ===

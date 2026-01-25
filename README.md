@@ -20,6 +20,8 @@ Same inputs always produce the same password. No password storage needed.
 - **Multi-account support**: Different passwords for different usernames on the same domain
 - **Password rotation**: Bump version to generate new passwords without changing PIN
 - **Encrypted state file**: Usernames and versions stored in `~/.config/dpg/state.enc`, encrypted with YubiKey
+- **Interactive mode**: Run without arguments to search and select from stored domains
+- **Shell completions**: Tab completion for bash, zsh, and fish
 
 ## Requirements
 
@@ -112,16 +114,41 @@ password-generator github.com
 ### Command Line Options
 
 ```
-password-generator <domain> [options]
+password-generator [domain] [options]
 
 Options:
-  -v, --version <n>     Use specific version (default: from state or 1)
-  -u, --user <name>     Use specific username (skip interactive selection)
-  --add-user <name>     Add username to domain (no password generated)
-  --bump-version        Increment version for domain
-  --list                List all domains and usernames
-  -h, --help            Show help
+  -v, --version <n>       Use specific version (default: latest from state)
+  -u, --user <name>       Use specific username (skip interactive selection)
+  -i, --interactive       Interactive domain selection
+  --add-user <name>       Add username to domain (no password generated)
+  --bump-version          Increment version for domain
+  --list                  List all domains and usernames
+  --generate-completions <shell>
+                          Generate shell completions (bash, zsh, fish)
+  -h, --help              Show help
 ```
+
+### Interactive Mode
+
+Run without arguments to enter interactive mode:
+
+```bash
+password-generator
+# Output:
+# Stored domains:
+#   [1] github.com (2 users)
+#   [2] gmail.com (3 users)
+#   [3] twitter.com
+#   [n] Enter new domain
+#
+# Select or search: git
+# -> Matches "github.com", proceeds to username selection
+```
+
+You can:
+- Enter a number to select a domain
+- Type part of a domain name to search (substring match)
+- Enter `n` to add a new domain
 
 ### Multi-Account Support
 
@@ -235,6 +262,39 @@ head -c 32 /dev/urandom | xxd -i
 ```
 
 Replace `APP_SALT` array in `src/main.rs` with the output.
+
+## Shell Completions
+
+Enable Tab completion for domains and options.
+
+### Bash
+
+```bash
+# Add to ~/.bashrc
+password-generator --generate-completions bash >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Zsh
+
+```bash
+# Add to ~/.zshrc
+password-generator --generate-completions zsh >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Fish
+
+```bash
+password-generator --generate-completions fish > ~/.config/fish/completions/password-generator.fish
+```
+
+### How It Works
+
+- A plaintext cache of domain names is stored at `~/.config/dpg/domains.cache`
+- The cache is updated every time you use the tool (after YubiKey unlock)
+- Tab completion reads from this cache (no YubiKey needed for completion)
+- Usernames are NOT cached (they remain encrypted)
 
 ## Backward Compatibility
 

@@ -56,7 +56,6 @@ interface UsernameEntry {
 interface RecentDomain {
   domain: string;
   lastUsed: number;
-  usernames: string[];
 }
 
 // Load recent domains from LocalStorage
@@ -72,25 +71,18 @@ async function loadRecentDomains(): Promise<RecentDomain[]> {
   return [];
 }
 
-// Save a domain to recent history
-async function saveRecentDomain(
-  domain: string,
-  username?: string,
-): Promise<void> {
+// Save a domain to recent history (domain only, no usernames)
+async function saveRecentDomain(domain: string): Promise<void> {
   try {
     const recents = await loadRecentDomains();
     const existing = recents.find((r) => r.domain === domain);
 
     if (existing) {
       existing.lastUsed = Date.now();
-      if (username && !existing.usernames.includes(username)) {
-        existing.usernames.push(username);
-      }
     } else {
       recents.push({
         domain,
         lastUsed: Date.now(),
-        usernames: username ? [username] : [],
       });
     }
 
@@ -154,142 +146,86 @@ export default function Command() {
     };
   }, []);
 
-  const startProcess = useCallback(
-    (domain: string) => {
-      setSelectedDomain(domain);
-      outputBufferRef.current = "";
-      setOutput("");
-      setError("");
+  const startProcess = useCallback((domain: string) => {
+    // Save domain locally and clear search
+    saveRecentDomain(domain);
+    setSelectedDomain(domain);
+    setSearchText("");
+    setUsernameSearch("");
+    outputBufferRef.current = "";
+    setOutput("");
+    setError("");
 
-      const proc = spawn(PASSWORD_GENERATOR_PATH, [domain], {
-        env: { ...process.env, PATH: MACOS_PATH },
-      });
+    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain], {
+      env: { ...process.env, PATH: MACOS_PATH },
+    });
 
-      processRef.current = proc;
+    processRef.current = proc;
 
-      proc.stdout?.on("data", (data: Buffer) => {
-        const text = data.toString();
-        outputBufferRef.current += text;
-        setOutput((prev) => prev + text);
+    proc.stdout?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+      setOutput((prev) => prev + text);
 
-        if (text.includes("copied to clipboard")) {
-          setStage("success");
-          saveRecentDomain(domain, selectedUsername || undefined);
-          showHUD("✅ Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
-        }
-      });
+      if (text.includes("copied to clipboard")) {
+        setStage("success");
+        showHUD("Password copied to clipboard!");
+        setTimeout(() => popToRoot(), 1000);
+      }
+    });
 
-      proc.stderr?.on("data", (data: Buffer) => {
-        const text = data.toString();
-        outputBufferRef.current += text;
-        setOutput((prev) => prev + text);
+    proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+      setOutput((prev) => prev + text);
 
-        if (text.includes("Touch YubiKey to unlock state")) {
-          setStage("unlock-touch");
-        } else if (text.includes("Usernames for")) {
-          setTimeout(() => {
-            const parsed = parseUsernames(outputBufferRef.current);
-            if (parsed.length > 0) {
-              setUsernames(parsed);
-              setStage("select-username");
-            }
-          }, 100);
-        } else if (text.includes("Touch YubiKey for password")) {
-          setStage("password-touch");
-        } else if (text.includes("Enter PIN:")) {
-          setStage("enter-pin");
-        } else if (text.includes("copied to clipboard")) {
-          setStage("success");
-          saveRecentDomain(domain, selectedUsername || undefined);
-          showHUD("✅ Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
-        } else if (text.toLowerCase().includes("error")) {
-          setError(outputBufferRef.current);
-          setStage("error");
-        }
-      });
-
-      proc.on("error", (err) => {
-        setError(
-          `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
-        );
-        setStage("error");
-      });
-
-      proc.on("close", (code) => {
-        if (
-          code !== 0 &&
-          !outputBufferRef.current.includes("copied to clipboard")
-        ) {
-          if (stage !== "error") {
-            setError(
-              outputBufferRef.current || `Process exited with code ${code}`,
-            );
-            setStage("error");
+      if (text.includes("Touch YubiKey to unlock state")) {
+        setStage("unlock-touch");
+      } else if (text.includes("Usernames for")) {
+        setTimeout(() => {
+          const parsed = parseUsernames(outputBufferRef.current);
+          // Always add domain-only option if not already present
+          if (!parsed.some((p) => p.isDomainOnly)) {
+            parsed.unshift({
+              index: "d",
+              name: "Domain-only mode",
+              isDomainOnly: true,
+            });
           }
-        }
-      });
-    },
-    [selectedUsername, stage],
-  );
-
-  const startProcessWithUsername = useCallback(
-    (domain: string, username: string) => {
-      setSelectedDomain(domain);
-      setSelectedUsername(username);
-      outputBufferRef.current = "";
-      setOutput("");
-      setError("");
-
-      const args = [domain, "-u", username];
-      const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
-        env: { ...process.env, PATH: MACOS_PATH },
-      });
-
-      processRef.current = proc;
-
-      proc.stdout?.on("data", (data: Buffer) => {
-        const text = data.toString();
-        outputBufferRef.current += text;
-        setOutput((prev) => prev + text);
-
-        if (text.includes("copied to clipboard")) {
-          setStage("success");
-          saveRecentDomain(domain, username);
-          showHUD("✅ Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
-        }
-      });
-
-      proc.stderr?.on("data", (data: Buffer) => {
-        const text = data.toString();
-        outputBufferRef.current += text;
-
-        if (text.includes("Touch YubiKey to unlock state")) {
-          setStage("unlock-touch");
-        } else if (text.includes("Touch YubiKey for password")) {
-          setStage("password-touch");
-        } else if (text.includes("Enter PIN:")) {
-          setStage("enter-pin");
-        } else if (text.includes("copied to clipboard")) {
-          setStage("success");
-          saveRecentDomain(domain, username);
-          showHUD("✅ Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
-        } else if (text.toLowerCase().includes("error")) {
-          setError(outputBufferRef.current);
-          setStage("error");
-        }
-      });
-
-      proc.on("error", (err) => {
-        setError(`Failed to start process: ${err.message}`);
+          setUsernames(parsed);
+          setStage("select-username");
+        }, 100);
+      } else if (text.includes("Touch YubiKey for password")) {
+        setStage("password-touch");
+      } else if (text.includes("Enter PIN:")) {
+        setStage("enter-pin");
+      } else if (text.includes("copied to clipboard")) {
+        setStage("success");
+        showHUD("Password copied to clipboard!");
+        setTimeout(() => popToRoot(), 1000);
+      } else if (text.toLowerCase().includes("error")) {
+        setError(outputBufferRef.current);
         setStage("error");
-      });
-    },
-    [],
-  );
+      }
+    });
+
+    proc.on("error", (err) => {
+      setError(
+        `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
+      );
+      setStage("error");
+    });
+
+    proc.on("close", (code) => {
+      if (
+        code !== 0 &&
+        !outputBufferRef.current.includes("copied to clipboard")
+      ) {
+        setError(outputBufferRef.current || `Process exited with code ${code}`);
+        setStage("error");
+      }
+    });
+  }, []);
 
   const sendInput = useCallback((input: string) => {
     if (processRef.current?.stdin) {
@@ -316,15 +252,10 @@ export default function Command() {
       searchText.length > 0 &&
       !domains.some((d) => d.toLowerCase() === searchText.toLowerCase());
 
-    // Get usernames for filtered domains (for quick access)
-    const getRecentUsernames = (domain: string) => {
-      const recent = recentDomains.find((r) => r.domain === domain);
-      return recent?.usernames || [];
-    };
-
     return (
       <List
         searchBarPlaceholder="Search or enter new domain..."
+        searchText={searchText}
         onSearchTextChange={setSearchText}
         filtering={false}
       >
@@ -344,50 +275,21 @@ export default function Command() {
           />
         )}
         <List.Section title="Recent Domains">
-          {filteredDomains.map((domain) => {
-            const usernames = getRecentUsernames(domain);
-            return (
-              <List.Item
-                key={domain}
-                icon={Icon.Globe}
-                title={domain}
-                subtitle={
-                  usernames.length > 0
-                    ? `${usernames.length} saved username${usernames.length > 1 ? "s" : ""}`
-                    : undefined
-                }
-                accessories={
-                  usernames.length > 0
-                    ? [{ text: usernames[0], icon: Icon.Person }]
-                    : undefined
-                }
-                actions={
-                  <ActionPanel>
-                    <Action
-                      title="Select Domain"
-                      onAction={() => startProcess(domain)}
-                    />
-                    {usernames.length > 0 && (
-                      <ActionPanel.Submenu
-                        title="Quick Select Username"
-                        icon={Icon.Person}
-                      >
-                        {usernames.map((username) => (
-                          <Action
-                            key={username}
-                            title={username}
-                            onAction={() =>
-                              startProcessWithUsername(domain, username)
-                            }
-                          />
-                        ))}
-                      </ActionPanel.Submenu>
-                    )}
-                  </ActionPanel>
-                }
-              />
-            );
-          })}
+          {filteredDomains.map((domain) => (
+            <List.Item
+              key={domain}
+              icon={Icon.Globe}
+              title={domain}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title="Select Domain"
+                    onAction={() => startProcess(domain)}
+                  />
+                </ActionPanel>
+              }
+            />
+          ))}
         </List.Section>
         {recentDomains.length === 0 && !showNewDomainOption && (
           <List.EmptyView
@@ -404,18 +306,18 @@ export default function Command() {
   if (stage === "unlock-touch") {
     return (
       <Detail
-        markdown={`# 🔑 Touch YubiKey
+        markdown={`# Touch YubiKey
 
 Touch your YubiKey to unlock state...
 
-**Domain:** \`${selectedDomain}\`${selectedUsername ? `\n**Username:** \`${selectedUsername}\`` : ""}
+**Domain:** \`${selectedDomain}\`
 
 *Waiting for hardware interaction...*`}
       />
     );
   }
 
-  // Stage: Select Username
+  // Stage: Select Username (from CLI state)
   if (stage === "select-username") {
     const filteredUsernames = usernames.filter(
       (u) =>
@@ -423,23 +325,28 @@ Touch your YubiKey to unlock state...
         u.name.toLowerCase().includes(usernameSearch.toLowerCase()),
     );
 
+    // Show "add new" option when user types something not in the list
     const showNewUsernameOption =
       usernameSearch.length > 0 &&
       !usernames.some(
-        (u) => u.name.toLowerCase() === usernameSearch.toLowerCase(),
+        (u) =>
+          !u.isDomainOnly &&
+          u.name.toLowerCase() === usernameSearch.toLowerCase(),
       );
 
     return (
       <List
-        searchBarPlaceholder="Search or enter new username..."
+        searchBarPlaceholder="Select username, type new, or leave empty..."
+        searchText={usernameSearch}
         onSearchTextChange={setUsernameSearch}
         filtering={false}
       >
-        <List.Section title={`Usernames for ${selectedDomain}`}>
+        <List.Section title={`Username for ${selectedDomain}`}>
+          {/* New username option when typing */}
           {showNewUsernameOption && (
             <List.Item
               icon={Icon.Plus}
-              title={`Add "${usernameSearch}"`}
+              title={`Use "${usernameSearch}"`}
               subtitle="New username"
               actions={
                 <ActionPanel>
@@ -454,16 +361,20 @@ Touch your YubiKey to unlock state...
               }
             />
           )}
+
+          {/* Existing usernames from CLI state */}
           {filteredUsernames.map((entry) => (
             <List.Item
               key={entry.index}
               icon={entry.isDomainOnly ? Icon.Globe : Icon.Person}
               title={entry.name}
-              subtitle={entry.isDomainOnly ? undefined : `[${entry.index}]`}
+              subtitle={entry.isDomainOnly ? "No username" : undefined}
               actions={
                 <ActionPanel>
                   <Action
-                    title="Select Username"
+                    title={
+                      entry.isDomainOnly ? "Use Domain Only" : "Select Username"
+                    }
                     onAction={() => {
                       if (!entry.isDomainOnly) {
                         setSelectedUsername(entry.name);
@@ -484,7 +395,7 @@ Touch your YubiKey to unlock state...
   if (stage === "password-touch") {
     return (
       <Detail
-        markdown={`# 🔑 Touch YubiKey Again
+        markdown={`# Touch YubiKey Again
 
 Touch your YubiKey to generate password...
 
@@ -527,7 +438,7 @@ Touch your YubiKey to generate password...
       : selectedDomain;
     return (
       <Detail
-        markdown={`# ✅ Password Generated!
+        markdown={`# Password Generated!
 
 Password for \`${subtitle}\` has been copied to your clipboard.
 
@@ -540,7 +451,7 @@ It will be cleared in 20 seconds.`}
   if (stage === "error") {
     return (
       <Detail
-        markdown={`# ❌ Error
+        markdown={`# Error
 
 \`\`\`
 ${error || output || "Unknown error"}

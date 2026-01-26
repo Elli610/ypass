@@ -183,17 +183,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Handle --bump-version command
+    // Handle --bump-version command (requires -u for username, or bumps domain-only)
     if args.bump_version {
-        let current = get_version(&state, &normalized_domain);
-        set_version(&mut state, &normalized_domain, current + 1);
+        let username = args.username.clone().unwrap_or_default();
+        let current = get_version(&state, &normalized_domain, &username);
+        set_version(&mut state, &normalized_domain, &username, current + 1);
         save_state(&state, &state_key)?;
-        eprintln!(
-            "Bumped version for '{}' from {} to {}",
-            normalized_domain,
-            current,
-            current + 1
-        );
+        if username.is_empty() {
+            eprintln!(
+                "Bumped version for '{}' (domain-only) from {} to {}",
+                normalized_domain,
+                current,
+                current + 1
+            );
+        } else {
+            eprintln!(
+                "Bumped version for '{}' / '{}' from {} to {}",
+                normalized_domain,
+                username,
+                current,
+                current + 1
+            );
+        }
         return Ok(());
     }
 
@@ -211,9 +222,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Handle --delete-user command
     if let Some(username) = args.delete_user {
         if let Some(domain_state) = state.domains.get_mut(&normalized_domain) {
-            let initial_len = domain_state.usernames.len();
-            domain_state.usernames.retain(|u| u != &username);
-            if domain_state.usernames.len() < initial_len {
+            if domain_state.usernames.remove(&username).is_some() {
                 save_state(&state, &state_key)?;
                 eprintln!("Deleted username '{}' from domain '{}'", username, normalized_domain);
             } else {
@@ -246,10 +255,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         select_username(&usernames, &normalized_domain, &mut state, &mut state_modified)?
     };
 
-    // Determine version
+    // Determine version (per-username)
     let version = args
         .version_override
-        .unwrap_or_else(|| get_version(&state, &normalized_domain));
+        .unwrap_or_else(|| get_version(&state, &normalized_domain, &username));
 
     // Step 2: Get YubiKey response for password generation
     eprint!("Touch YubiKey for password...");
@@ -586,23 +595,32 @@ fn get_usernames(state: &State, domain: &str) -> Vec<String> {
     state
         .domains
         .get(domain)
-        .map(|d| d.usernames.clone())
+        .map(|d| {
+            d.usernames
+                .keys()
+                .filter(|k| !k.is_empty()) // Exclude domain-only entry
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 
-fn get_version(state: &State, domain: &str) -> u32 {
-    state.domains.get(domain).map(|d| d.version).unwrap_or(1)
+fn get_version(state: &State, domain: &str, username: &str) -> u32 {
+    state
+        .domains
+        .get(domain)
+        .and_then(|d| d.usernames.get(username).copied())
+        .unwrap_or(1)
 }
 
 fn add_username(state: &mut State, domain: &str, username: &str) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    if !entry.usernames.contains(&username.to_string()) {
-        entry.usernames.push(username.to_string());
-    }
+    entry.usernames.entry(username.to_string()).or_insert(1);
 }
 
-fn set_version(state: &mut State, domain: &str, version: u32) {
-    state.domains.entry(domain.to_string()).or_default().version = version;
+fn set_version(state: &mut State, domain: &str, username: &str, version: u32) {
+    let entry = state.domains.entry(domain.to_string()).or_default();
+    entry.usernames.insert(username.to_string(), version);
 }
 
 fn list_all_entries(state: &State) {
@@ -615,12 +633,18 @@ fn list_all_entries(state: &State) {
     domains.sort_by_key(|(k, _)| *k);
 
     for (domain, entry) in domains {
-        println!("{} (v{})", domain, entry.version);
+        println!("{}", domain);
         if entry.usernames.is_empty() {
-            println!("  (domain-only mode)");
+            println!("  (no entries)");
         } else {
-            for username in &entry.usernames {
-                println!("  - {}", username);
+            let mut users: Vec<_> = entry.usernames.iter().collect();
+            users.sort_by_key(|(k, _)| *k);
+            for (username, version) in users {
+                if username.is_empty() {
+                    println!("  - (domain-only) (v{})", version);
+                } else {
+                    println!("  - {} (v{})", username, version);
+                }
             }
         }
     }
@@ -1319,12 +1343,17 @@ mod tests {
         let mut state = State::default();
         add_username(&mut state, "github.com", "user1");
         add_username(&mut state, "github.com", "user2");
-        set_version(&mut state, "github.com", 2);
+        set_version(&mut state, "github.com", "user1", 2);
+        set_version(&mut state, "github.com", "user2", 3);
 
         let json = serde_json::to_string(&state).unwrap();
         let loaded: State = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(get_usernames(&loaded, "github.com"), vec!["user1", "user2"]);
-        assert_eq!(get_version(&loaded, "github.com"), 2);
+        let usernames = get_usernames(&loaded, "github.com");
+        assert!(usernames.contains(&"user1".to_string()));
+        assert!(usernames.contains(&"user2".to_string()));
+        assert_eq!(get_version(&loaded, "github.com", "user1"), 2);
+        assert_eq!(get_version(&loaded, "github.com", "user2"), 3);
+        assert_eq!(get_version(&loaded, "github.com", ""), 1); // domain-only defaults to 1
     }
 }

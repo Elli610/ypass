@@ -47,34 +47,50 @@ type Stage =
 interface UsernameEntry {
   index: string;
   name: string;
+  version: number;
   isDomainOnly?: boolean;
+}
+
+interface StoredUsername {
+  name: string;
+  version: number;
 }
 
 interface DomainEntry {
   domain: string;
-  version: number;
-  usernames: string[];
+  usernames: StoredUsername[];
 }
 
 // Parse domains from --list output
+// New format:
+//   domain.com
+//     - (domain-only) (v1)
+//     - username (v2)
 function parseDomains(output: string): DomainEntry[] {
   const entries: DomainEntry[] = [];
   const lines = output.split("\n");
 
   for (const line of lines) {
-    // Match: "domain.com (v1)" or "domain.com (v2)"
-    const match = line.match(/^(\S+)\s+\(v(\d+)\)/);
-    if (match) {
+    // Match domain line (no indentation, no version)
+    const domainMatch = line.match(/^(\S+)$/);
+    if (domainMatch) {
       entries.push({
-        domain: match[1],
-        version: parseInt(match[2], 10),
+        domain: domainMatch[1],
         usernames: [],
       });
+      continue;
     }
-    // Capture usernames (lines starting with "  - ")
-    const usernameMatch = line.match(/^\s+-\s+(.+)/);
+    // Match username with version: "  - username (v1)" or "  - (domain-only) (v1)"
+    const usernameMatch = line.match(/^\s+-\s+(.+?)\s+\(v(\d+)\)/);
     if (usernameMatch && entries.length > 0) {
-      entries[entries.length - 1].usernames.push(usernameMatch[1].trim());
+      const name = usernameMatch[1].trim();
+      const version = parseInt(usernameMatch[2], 10);
+      // "(domain-only)" becomes empty string
+      const storedName = name === "(domain-only)" ? "" : name;
+      entries[entries.length - 1].usernames.push({
+        name: storedName,
+        version,
+      });
     }
   }
 
@@ -86,7 +102,6 @@ export default function Command() {
   const [domains, setDomains] = useState<DomainEntry[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>("");
   const [selectedUsername, setSelectedUsername] = useState<string>("");
-  const [selectedVersion, setSelectedVersion] = useState<number>(1);
   const [isNewDomain, setIsNewDomain] = useState<boolean>(false);
   const [usernames, setUsernames] = useState<UsernameEntry[]>([]);
   const [output, setOutput] = useState<string>("");
@@ -189,7 +204,10 @@ export default function Command() {
         setDomains((prev) =>
           prev.map((d) =>
             d.domain === domain
-              ? { ...d, usernames: d.usernames.filter((u) => u !== username) }
+              ? {
+                  ...d,
+                  usernames: d.usernames.filter((u) => u.name !== username),
+                }
               : d,
           ),
         );
@@ -243,8 +261,8 @@ export default function Command() {
     });
   }, []);
 
-  // Bump version for a domain (requires YubiKey touch)
-  const handleBumpVersion = useCallback((domain: string) => {
+  // Bump version for a domain/username (requires YubiKey touch)
+  const handleBumpVersion = useCallback((domain: string, username: string) => {
     if (processRef.current) {
       processRef.current.kill();
       processRef.current = null;
@@ -254,7 +272,13 @@ export default function Command() {
     setOutput("");
     outputBufferRef.current = "";
 
-    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain, "--bump-version"], {
+    // Build args: domain --bump-version [-u username]
+    const args = [domain, "--bump-version"];
+    if (username) {
+      args.push("-u", username);
+    }
+
+    const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
       env: { ...process.env, PATH: MACOS_PATH },
     });
 
@@ -262,7 +286,7 @@ export default function Command() {
       const text = data.toString();
       outputBufferRef.current += text;
 
-      // Match "Bumped version for 'domain' from X to Y"
+      // Match "Bumped version ... from X to Y"
       const match = text.match(/from (\d+) to (\d+)/);
       if (match) {
         const newVersion = parseInt(match[2], 10);
@@ -270,14 +294,29 @@ export default function Command() {
         // Update local state
         setDomains((prev) =>
           prev.map((d) =>
-            d.domain === domain ? { ...d, version: newVersion } : d,
+            d.domain === domain
+              ? {
+                  ...d,
+                  usernames: d.usernames.map((u) =>
+                    u.name === username ? { ...u, version: newVersion } : u,
+                  ),
+                }
+              : d,
           ),
         );
-        setSelectedVersion(newVersion);
-        setStage("select-domain");
+        // Update usernames list for current view
+        setUsernames((prev) =>
+          prev.map((u) =>
+            (u.isDomainOnly && username === "") ||
+            (!u.isDomainOnly && u.name === username)
+              ? { ...u, version: newVersion }
+              : u,
+          ),
+        );
+        setStage("select-username");
       } else if (text.includes("not found")) {
-        showHUD(`Domain "${domain}" not found`);
-        setStage("select-domain");
+        showHUD(`Not found`);
+        setStage("select-username");
       }
     });
 
@@ -297,14 +336,8 @@ export default function Command() {
 
   // Select domain and show username selection from cached data
   const selectDomain = useCallback(
-    (
-      domain: string,
-      cachedUsernames?: string[],
-      version?: number,
-      isNew?: boolean,
-    ) => {
+    (domain: string, cachedUsernames?: StoredUsername[], isNew?: boolean) => {
       setSelectedDomain(domain);
-      setSelectedVersion(version ?? 1);
       setIsNewDomain(isNew ?? false);
       setSearchText("");
       setUsernameSearch("");
@@ -312,18 +345,26 @@ export default function Command() {
       // Build usernames list for selection
       const usernameEntries: UsernameEntry[] = [];
 
-      // Add domain-only option first
+      // Check if there's a stored domain-only entry
+      const domainOnlyEntry = cachedUsernames?.find((u) => u.name === "");
       usernameEntries.push({
         index: "d",
         name: "Domain-only mode",
+        version: domainOnlyEntry?.version ?? 1,
         isDomainOnly: true,
       });
 
-      // Add cached usernames if available
+      // Add cached usernames if available (excluding domain-only)
       if (cachedUsernames) {
-        cachedUsernames.forEach((name, i) => {
-          usernameEntries.push({ index: String(i + 1), name });
-        });
+        cachedUsernames
+          .filter((u) => u.name !== "")
+          .forEach((u, i) => {
+            usernameEntries.push({
+              index: String(i + 1),
+              name: u.name,
+              version: u.version,
+            });
+          });
       }
 
       setUsernames(usernameEntries);
@@ -495,7 +536,7 @@ Touch your YubiKey to unlock state and load domains...
               <ActionPanel>
                 <Action
                   title="Select Domain"
-                  onAction={() => selectDomain(searchText, [], 1, true)}
+                  onAction={() => selectDomain(searchText, [], true)}
                 />
               </ActionPanel>
             }
@@ -507,12 +548,11 @@ Touch your YubiKey to unlock state and load domains...
               key={entry.domain}
               icon={Icon.Globe}
               title={entry.domain}
-              subtitle={`v${entry.version}`}
               accessories={
                 entry.usernames.length > 0
                   ? [
                       {
-                        text: `${entry.usernames.length} user${entry.usernames.length > 1 ? "s" : ""}`,
+                        text: `${entry.usernames.length} entr${entry.usernames.length > 1 ? "ies" : "y"}`,
                         icon: Icon.Person,
                       },
                     ]
@@ -523,19 +563,8 @@ Touch your YubiKey to unlock state and load domains...
                   <Action
                     title="Select Domain"
                     onAction={() =>
-                      selectDomain(
-                        entry.domain,
-                        entry.usernames,
-                        entry.version,
-                        false,
-                      )
+                      selectDomain(entry.domain, entry.usernames, false)
                     }
-                  />
-                  <Action
-                    title="Bump Version"
-                    icon={Icon.Plus}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
-                    onAction={() => handleBumpVersion(entry.domain)}
                   />
                   <Action
                     title="Refresh Domains"
@@ -620,16 +649,10 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       startProcess(
                         selectedDomain,
                         usernameSearch,
-                        selectedVersion,
+                        1, // new usernames start at version 1
                         true, // new username always needs state unlock
                       )
                     }
-                  />
-                  <Action
-                    title="Bump Version"
-                    icon={Icon.Plus}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
-                    onAction={() => handleBumpVersion(selectedDomain)}
                   />
                   <Action
                     title="Back to Domains"
@@ -649,6 +672,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
               icon={entry.isDomainOnly ? Icon.Globe : Icon.Person}
               title={entry.name}
               subtitle={entry.isDomainOnly ? "No username" : undefined}
+              accessories={[{ text: `v${entry.version}` }]}
               actions={
                 <ActionPanel>
                   <Action
@@ -661,7 +685,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         startProcess(
                           selectedDomain,
                           undefined,
-                          selectedVersion,
+                          entry.version,
                           isNewDomain,
                         );
                       } else {
@@ -669,11 +693,22 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         startProcess(
                           selectedDomain,
                           entry.name,
-                          selectedVersion,
+                          entry.version,
                           false,
                         );
                       }
                     }}
+                  />
+                  <Action
+                    title="Bump Version"
+                    icon={Icon.Plus}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    onAction={() =>
+                      handleBumpVersion(
+                        selectedDomain,
+                        entry.isDomainOnly ? "" : entry.name,
+                      )
+                    }
                   />
                   {!entry.isDomainOnly && (
                     <Action
@@ -686,12 +721,6 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       }
                     />
                   )}
-                  <Action
-                    title="Bump Version"
-                    icon={Icon.Plus}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
-                    onAction={() => handleBumpVersion(selectedDomain)}
-                  />
                   <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}

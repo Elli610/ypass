@@ -111,6 +111,8 @@ struct Args {
     generate_completions: Option<String>,
     interactive: bool,
     skip_state: bool,
+    reset_pin: bool,
+    check_pin: bool,
 }
 
 fn main() {
@@ -127,6 +129,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(shell) = &args.generate_completions {
         print_completions(shell)?;
         return Ok(());
+    }
+
+    // Handle --check-pin (no YubiKey needed)
+    if args.check_pin {
+        // Read PIN from stdin
+        let mut pin = String::new();
+        io::stdin().read_line(&mut pin)?;
+        let pin = pin.trim();
+
+        if pin.is_empty() {
+            std::process::exit(1);
+        }
+
+        // Check if PIN matches stored checksum
+        if verify_pin_checksum(pin)? {
+            std::process::exit(0); // PIN correct
+        } else {
+            std::process::exit(1); // PIN wrong
+        }
     }
 
     // Fast path: --skip-state mode for password generation only (no state unlock needed)
@@ -146,14 +167,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let yubikey_seed = get_yubikey_response(&normalized_domain)?;
         eprintln!(" OK");
 
-        // Get PIN
-        eprint!("Enter PIN: ");
-        io::stderr().flush()?;
-        let pin = read_password_no_echo()?;
-        eprintln!();
+        // Get and verify PIN (with retry on failure)
+        let has_checksum = load_pin_checksum().is_some();
+        let pin = loop {
+            eprint!("Enter PIN: ");
+            io::stderr().flush()?;
+            let pin = read_password_no_echo()?;
+            eprintln!();
 
-        if pin.is_empty() {
-            return Err("PIN cannot be empty".into());
+            if pin.is_empty() {
+                return Err("PIN cannot be empty".into());
+            }
+
+            // Verify PIN checksum if it exists
+            if verify_pin_checksum(&pin)? {
+                break pin;
+            } else {
+                eprintln!("Wrong PIN. Please try again.");
+                continue;
+            }
+        };
+
+        // Save PIN checksum if first use
+        if !has_checksum {
+            let checksum = compute_pin_checksum(&pin)?;
+            save_pin_checksum(checksum)?;
+            eprintln!("PIN verification enabled for future use.");
         }
 
         // Generate password
@@ -186,6 +225,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Handle --list command
     if args.list {
         list_all_entries(&state);
+        return Ok(());
+    }
+
+    // Handle --reset-pin command
+    if args.reset_pin {
+        if delete_pin_checksum()? {
+            eprintln!("PIN verification reset. Your new PIN will be saved on next password generation.");
+        } else {
+            eprintln!("PIN verification was not set up yet.");
+        }
         return Ok(());
     }
 
@@ -287,28 +336,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let yubikey_seed = get_yubikey_response(&normalized_domain)?;
     eprintln!(" OK");
 
-    // Step 3: Get PIN from user (no echo)
-    eprint!("Enter PIN: ");
-    io::stderr().flush()?;
-    let pin = read_password_no_echo()?;
-    eprintln!();
+    // Step 3: Get and verify PIN (with retry on failure)
+    let has_checksum = load_pin_checksum().is_some();
+    let pin = loop {
+        eprint!("Enter PIN: ");
+        io::stderr().flush()?;
+        let pin = read_password_no_echo()?;
+        eprintln!();
 
-    if pin.is_empty() {
-        return Err("PIN cannot be empty".into());
-    }
+        if pin.is_empty() {
+            return Err("PIN cannot be empty".into());
+        }
+
+        // Verify PIN checksum if it exists
+        if verify_pin_checksum(&pin)? {
+            break pin; // PIN matches checksum (or no checksum stored)
+        } else {
+            eprintln!("Wrong PIN. Please try again.");
+            continue;
+        }
+    };
 
     // Step 4: Generate password using Argon2id
     let password = generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
 
-    // Step 5: Save state if modified
+    // Step 5: Save PIN checksum if first use
+    if !has_checksum {
+        let checksum = compute_pin_checksum(&pin)?;
+        save_pin_checksum(checksum)?;
+        eprintln!("PIN verification enabled for future use.");
+    }
+
+    // Step 6: Save state if modified
     if state_modified {
         save_state(&state, &state_key)?;
     }
 
-    // Step 6: Copy to clipboard and schedule clear
+    // Step 7: Copy to clipboard and schedule clear
     copy_to_clipboard_with_clear(&password)?;
 
-    // Step 7: Display password (for terminal use)
+    // Step 8: Display password (for terminal use)
     println!("{}", &*password);
 
     let info = if username.is_empty() {
@@ -342,6 +409,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut generate_completions = None;
     let mut interactive = false;
     let mut skip_state = false;
+    let mut reset_pin = false;
+    let mut check_pin = false;
 
     // No args = interactive mode
     if args.len() == 1 {
@@ -357,6 +426,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             generate_completions: None,
             interactive: true,
             skip_state: false,
+            reset_pin: false,
+            check_pin: false,
         });
     }
 
@@ -407,6 +478,12 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--skip-state" => {
                 skip_state = true;
             }
+            "--reset-pin" => {
+                reset_pin = true;
+            }
+            "--check-pin" => {
+                check_pin = true;
+            }
             "--generate-completions" => {
                 i += 1;
                 if i >= args.len() {
@@ -443,6 +520,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         generate_completions,
         interactive,
         skip_state,
+        reset_pin,
+        check_pin,
     })
 }
 
@@ -459,6 +538,8 @@ fn print_usage(program: &str) {
     eprintln!("  --bump-version        Increment version for domain");
     eprintln!("  --list                List all domains and usernames");
     eprintln!("  --skip-state          Skip state unlock (use with -u and -v)");
+    eprintln!("  --reset-pin           Reset PIN verification (use when changing PIN)");
+    eprintln!("  --check-pin           Verify PIN from stdin (exit 0=ok, 1=wrong)");
     eprintln!("  --generate-completions <shell>");
     eprintln!("                        Generate shell completions (bash, zsh, fish)");
     eprintln!("  -h, --help            Show this help");
@@ -691,6 +772,74 @@ fn list_all_entries(state: &State) {
                 }
             }
         }
+    }
+}
+
+// === PIN Checksum Functions ===
+
+/// Get path to PIN checksum file
+fn get_pin_check_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    PathBuf::from(home)
+        .join(".config")
+        .join("dpg")
+        .join("pin.check")
+}
+
+/// Compute 2-bit checksum of PIN using Argon2id
+fn compute_pin_checksum(pin: &str) -> Result<u8, Box<dyn std::error::Error>> {
+    let params = Params::new(65536, 3, 4, Some(32))?;
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+
+    let salt = b"dpg_pin_check_v1";
+    let mut hash = Zeroizing::new([0u8; 32]);
+    argon2.hash_password_into(pin.as_bytes(), salt, &mut *hash)?;
+
+    // Return first 2 bits (values 0-3)
+    Ok(hash[0] & 0b11)
+}
+
+/// Load PIN checksum from file (returns None if file doesn't exist)
+fn load_pin_checksum() -> Option<u8> {
+    let path = get_pin_check_path();
+    fs::read(&path).ok().and_then(|data| data.first().copied())
+}
+
+/// Save PIN checksum to file
+fn save_pin_checksum(checksum: u8) -> Result<(), Box<dyn std::error::Error>> {
+    let path = get_pin_check_path();
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(&path, [checksum])?;
+    Ok(())
+}
+
+/// Delete PIN checksum file
+fn delete_pin_checksum() -> Result<bool, Box<dyn std::error::Error>> {
+    let path = get_pin_check_path();
+    if path.exists() {
+        fs::remove_file(&path)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Verify PIN against stored checksum
+/// Returns Ok(true) if matches or no checksum stored, Ok(false) if mismatch
+fn verify_pin_checksum(pin: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    match load_pin_checksum() {
+        Some(stored) => {
+            let computed = compute_pin_checksum(pin)?;
+            Ok(computed == stored)
+        }
+        None => Ok(true), // No checksum stored, accept any PIN
     }
 }
 
@@ -1423,5 +1572,37 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let loaded: State = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.version, STATE_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn test_pin_checksum_deterministic() {
+        let pin = "test_pin";
+
+        // Same PIN should produce same checksum
+        let checksum1 = compute_pin_checksum(pin).unwrap();
+        let checksum2 = compute_pin_checksum(pin).unwrap();
+
+        assert_eq!(checksum1, checksum2);
+    }
+
+    #[test]
+    fn test_pin_checksum_2_bits() {
+        let pin = "test_pin";
+
+        // Checksum should be 2 bits (0-3)
+        let checksum = compute_pin_checksum(pin).unwrap();
+        assert!(checksum <= 3);
+    }
+
+    #[test]
+    fn test_pin_checksum_different_pins() {
+        // Different PINs may or may not have same checksum (2-bit = 25% collision)
+        // Just verify the function works with different inputs
+        let checksum1 = compute_pin_checksum("pin1").unwrap();
+        let checksum2 = compute_pin_checksum("pin2").unwrap();
+
+        // Both should be valid 2-bit values
+        assert!(checksum1 <= 3);
+        assert!(checksum2 <= 3);
     }
 }

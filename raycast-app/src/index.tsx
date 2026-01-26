@@ -96,6 +96,17 @@ async function saveRecentDomain(domain: string): Promise<void> {
   }
 }
 
+// Remove a domain from recent history
+async function removeRecentDomain(domain: string): Promise<void> {
+  try {
+    const recents = await loadRecentDomains();
+    const filtered = recents.filter((r) => r.domain !== domain);
+    await LocalStorage.setItem(RECENT_DOMAINS_KEY, JSON.stringify(filtered));
+  } catch (e) {
+    console.error("Failed to remove recent domain:", e);
+  }
+}
+
 // Parse usernames from CLI output
 function parseUsernames(output: string): UsernameEntry[] {
   const entries: UsernameEntry[] = [];
@@ -144,6 +155,13 @@ export default function Command() {
         processRef.current.kill();
       }
     };
+  }, []);
+
+  // Remove domain from cache and refresh list
+  const handleRemoveDomain = useCallback(async (domain: string) => {
+    await removeRecentDomain(domain);
+    const updated = await loadRecentDomains();
+    setRecentDomains(updated);
   }, []);
 
   const startProcess = useCallback((domain: string) => {
@@ -285,6 +303,13 @@ export default function Command() {
                   <Action
                     title="Select Domain"
                     onAction={() => startProcess(domain)}
+                  />
+                  <Action
+                    title="Remove from Recent"
+                    icon={Icon.Trash}
+                    style={Action.Style.Destructive}
+                    shortcut={{ modifiers: ["cmd"], key: "d" }}
+                    onAction={() => handleRemoveDomain(domain)}
                   />
                 </ActionPanel>
               }

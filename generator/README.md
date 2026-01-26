@@ -121,6 +121,8 @@ Options:
   -u, --user <name>       Use specific username (skip interactive selection)
   -i, --interactive       Interactive domain selection
   --add-user <name>       Add username to domain (no password generated)
+  --delete-user <name>    Delete username from domain
+  --delete-domain         Delete domain and all its usernames
   --bump-version          Increment version for domain
   --list                  List all domains and usernames
   --generate-completions <shell>
@@ -186,6 +188,20 @@ password-generator github.com -v 3
 ```
 
 > Note: latest version is use by default
+
+### Deleting Entries
+
+Remove usernames or entire domains from the state file:
+
+```bash
+# Delete a specific username from a domain
+password-generator github.com --delete-user olduser
+
+# Delete an entire domain and all its usernames
+password-generator github.com --delete-domain
+```
+
+Both commands require YubiKey touch to unlock the state file.
 
 ### List All Entries
 

@@ -90,6 +90,8 @@ struct Args {
     version_override: Option<u32>,
     username: Option<String>,
     add_user: Option<String>,
+    delete_user: Option<String>,
+    delete_domain: bool,
     bump_version: bool,
     list: bool,
     generate_completions: Option<String>,
@@ -157,6 +159,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             current,
             current + 1
         );
+        return Ok(());
+    }
+
+    // Handle --delete-domain command
+    if args.delete_domain {
+        if state.domains.remove(&normalized_domain).is_some() {
+            save_state(&state, &state_key)?;
+            eprintln!("Deleted domain '{}'", normalized_domain);
+        } else {
+            eprintln!("Domain '{}' not found", normalized_domain);
+        }
+        return Ok(());
+    }
+
+    // Handle --delete-user command
+    if let Some(username) = args.delete_user {
+        if let Some(domain_state) = state.domains.get_mut(&normalized_domain) {
+            let initial_len = domain_state.usernames.len();
+            domain_state.usernames.retain(|u| u != &username);
+            if domain_state.usernames.len() < initial_len {
+                save_state(&state, &state_key)?;
+                eprintln!("Deleted username '{}' from domain '{}'", username, normalized_domain);
+            } else {
+                eprintln!("Username '{}' not found in domain '{}'", username, normalized_domain);
+            }
+        } else {
+            eprintln!("Domain '{}' not found", normalized_domain);
+        }
         return Ok(());
     }
 
@@ -240,6 +270,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut version_override = None;
     let mut username = None;
     let mut add_user = None;
+    let mut delete_user = None;
+    let mut delete_domain = false;
     let mut bump_version = false;
     let mut list = false;
     let mut generate_completions = None;
@@ -252,6 +284,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             version_override: None,
             username: None,
             add_user: None,
+            delete_user: None,
+            delete_domain: false,
             bump_version: false,
             list: false,
             generate_completions: None,
@@ -283,6 +317,16 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
                     return Err("--add-user requires a username".into());
                 }
                 add_user = Some(args[i].clone());
+            }
+            "--delete-user" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--delete-user requires a username".into());
+                }
+                delete_user = Some(args[i].clone());
+            }
+            "--delete-domain" => {
+                delete_domain = true;
             }
             "--bump-version" => {
                 bump_version = true;
@@ -322,6 +366,8 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         version_override,
         username,
         add_user,
+        delete_user,
+        delete_domain,
         bump_version,
         list,
         generate_completions,
@@ -337,6 +383,8 @@ fn print_usage(program: &str) {
     eprintln!("  -u, --user <name>     Use specific username (skip interactive)");
     eprintln!("  -i, --interactive     Interactive domain selection");
     eprintln!("  --add-user <name>     Add username to domain");
+    eprintln!("  --delete-user <name>  Delete username from domain");
+    eprintln!("  --delete-domain       Delete domain and all its usernames");
     eprintln!("  --bump-version        Increment version for domain");
     eprintln!("  --list                List all domains and usernames");
     eprintln!("  --generate-completions <shell>");
@@ -348,6 +396,8 @@ fn print_usage(program: &str) {
     eprintln!("  {} github.com", program);
     eprintln!("  {} github.com -u myuser", program);
     eprintln!("  {} gmail.com --add-user work@gmail.com", program);
+    eprintln!("  {} github.com --delete-user olduser", program);
+    eprintln!("  {} github.com --delete-domain", program);
     eprintln!("  {} github.com --bump-version", program);
     eprintln!("  {} github.com -v 2", program);
     eprintln!("  {} --list", program);

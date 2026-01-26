@@ -164,6 +164,83 @@ export default function Command() {
     setRecentDomains(updated);
   }, []);
 
+  // Delete user from CLI state (requires YubiKey touch)
+  const handleDeleteUser = useCallback((domain: string, username: string) => {
+    // Kill current process
+    if (processRef.current) {
+      processRef.current.kill();
+      processRef.current = null;
+    }
+
+    setStage("unlock-touch");
+    setOutput("");
+    outputBufferRef.current = "";
+
+    const proc = spawn(
+      PASSWORD_GENERATOR_PATH,
+      [domain, "--delete-user", username],
+      { env: { ...process.env, PATH: MACOS_PATH } },
+    );
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+
+      if (text.includes("Deleted username")) {
+        showHUD(`Deleted "${username}" from ${domain}`);
+        // Restart flow for this domain
+        setTimeout(() => startProcess(domain), 500);
+      } else if (text.includes("not found")) {
+        showHUD(`Username "${username}" not found`);
+        setTimeout(() => startProcess(domain), 500);
+      }
+    });
+
+    proc.on("error", (err) => {
+      setError(`Failed to delete user: ${err.message}`);
+      setStage("error");
+    });
+  }, []);
+
+  // Delete domain from CLI state (requires YubiKey touch)
+  const handleDeleteDomainFromState = useCallback((domain: string) => {
+    // Kill current process
+    if (processRef.current) {
+      processRef.current.kill();
+      processRef.current = null;
+    }
+
+    setStage("unlock-touch");
+    setOutput("");
+    outputBufferRef.current = "";
+
+    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain, "--delete-domain"], {
+      env: { ...process.env, PATH: MACOS_PATH },
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+
+      if (text.includes("Deleted domain")) {
+        showHUD(`Deleted "${domain}" from state`);
+        // Also remove from local cache and go back to domain selection
+        removeRecentDomain(domain).then(() => {
+          loadRecentDomains().then(setRecentDomains);
+          setStage("select-domain");
+        });
+      } else if (text.includes("not found")) {
+        showHUD(`Domain "${domain}" not found in state`);
+        setStage("select-domain");
+      }
+    });
+
+    proc.on("error", (err) => {
+      setError(`Failed to delete domain: ${err.message}`);
+      setStage("error");
+    });
+  }, []);
+
   const startProcess = useCallback((domain: string) => {
     // Save domain locally and clear search
     saveRecentDomain(domain);
@@ -235,8 +312,10 @@ export default function Command() {
     });
 
     proc.on("close", (code) => {
+      // code is null when process is killed intentionally
       if (
         code !== 0 &&
+        code !== null &&
         !outputBufferRef.current.includes("copied to clipboard")
       ) {
         setError(outputBufferRef.current || `Process exited with code ${code}`);
@@ -306,10 +385,16 @@ export default function Command() {
                   />
                   <Action
                     title="Remove from Recent"
-                    icon={Icon.Trash}
-                    style={Action.Style.Destructive}
+                    icon={Icon.XMarkCircle}
                     shortcut={{ modifiers: ["cmd"], key: "d" }}
                     onAction={() => handleRemoveDomain(domain)}
+                  />
+                  <Action
+                    title="Delete from State"
+                    icon={Icon.Trash}
+                    style={Action.Style.Destructive}
+                    shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+                    onAction={() => handleDeleteDomainFromState(domain)}
                   />
                 </ActionPanel>
               }
@@ -407,6 +492,17 @@ Touch your YubiKey to unlock state...
                       sendInput(entry.index);
                     }}
                   />
+                  {!entry.isDomainOnly && (
+                    <Action
+                      title="Delete Username from State"
+                      icon={Icon.Trash}
+                      style={Action.Style.Destructive}
+                      shortcut={{ modifiers: ["cmd"], key: "d" }}
+                      onAction={() =>
+                        handleDeleteUser(selectedDomain, entry.name)
+                      }
+                    />
+                  )}
                 </ActionPanel>
               }
             />

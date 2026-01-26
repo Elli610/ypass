@@ -123,7 +123,7 @@ Options:
   --add-user <name>       Add username to domain (no password generated)
   --delete-user <name>    Delete username from domain
   --delete-domain         Delete domain and all its usernames
-  --bump-version          Increment version for domain
+  --bump-version          Increment version (use with -u for specific username)
   --list                  List all domains and usernames
   --skip-state            Skip state unlock, use with -u and -v (for scripts/integrations)
   --generate-completions <shell>
@@ -181,14 +181,17 @@ password-generator gmail.com -u personal@gmail.com
 When a site is breached and you need a new password:
 
 ```bash
-# Bump version (changes from v1 to v2)
+# Bump version for a specific username
+password-generator github.com --bump-version -u myuser
+
+# Bump version for domain-only mode
 password-generator github.com --bump-version
 
 # Or use a specific version
-password-generator github.com -v 3
+password-generator github.com -u myuser -v 3
 ```
 
-> Note: latest version is use by default
+> Note: Versions are tracked per-username. Latest version is used by default.
 
 ### Deleting Entries
 
@@ -209,11 +212,11 @@ Both commands require YubiKey touch to unlock the state file.
 ```bash
 password-generator --list
 # Output:
-# github.com (v2)
-#   - myuser
-# gmail.com (v1)
-#   - personal@gmail.com
-#   - work@gmail.com
+# github.com
+#   - myuser (v2)
+# gmail.com
+#   - personal@gmail.com (v1)
+#   - work@gmail.com (v3)
 ```
 
 ### Domain Normalization
@@ -236,6 +239,15 @@ Usernames and versions are stored encrypted at `~/.config/dpg/state.enc`.
 - Key derived from YubiKey HMAC response (requires YubiKey to decrypt)
 - Contains only domain names, usernames, and version numbers
 - No passwords or secrets are stored
+
+### Format Versions
+
+| Version | Description |
+|---------|-------------|
+| v1 | Original format, per-domain versions |
+| v2 | Per-username versions, format version field |
+
+The CLI automatically upgrades old state files on first use. If you try to use a state file from a newer CLI version, you'll be prompted to update.
 
 ## Restore From Backup
 

@@ -59,13 +59,34 @@ const PASSWORD_LENGTH: usize = 32;
 const CLIPBOARD_CLEAR_SECONDS: u64 = 20;
 const YUBIKEY_SLOT: &str = "1";
 
+/// State file format version
+/// v1: Original format (no version field, per-domain versions)
+/// v2: Per-username versions, added format version field
+const STATE_FORMAT_VERSION: u32 = 2;
+
 /// Type for charset validation checks: (predicate, charset, byte_offset)
 type CharsetCheck = (fn(&u8) -> bool, &'static [u8], usize);
 
 /// State stored in encrypted file
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct State {
+    /// Format version for compatibility detection
+    #[serde(default = "default_state_version")]
+    version: u32,
     domains: HashMap<String, DomainState>,
+}
+
+fn default_state_version() -> u32 {
+    1 // Old state files without version field are v1
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            version: STATE_FORMAT_VERSION,
+            domains: HashMap::new(),
+        }
+    }
 }
 
 /// Domain state with per-username versions
@@ -532,7 +553,26 @@ fn load_state(key: &[u8; 32]) -> Result<State, Box<dyn std::error::Error>> {
         .decrypt(nonce, ciphertext)
         .map_err(|_| "Failed to decrypt state file")?;
 
-    let state: State = serde_json::from_slice(&plaintext)?;
+    let mut state: State = serde_json::from_slice(&plaintext)?;
+
+    // Check version compatibility
+    if state.version > STATE_FORMAT_VERSION {
+        return Err(format!(
+            "State file is from a newer version (v{}) than this CLI supports (v{}). \
+             Please update the CLI.",
+            state.version, STATE_FORMAT_VERSION
+        ).into());
+    }
+
+    // Upgrade old state format to current version
+    if state.version < STATE_FORMAT_VERSION {
+        eprintln!(
+            "Upgrading state file from v{} to v{}",
+            state.version, STATE_FORMAT_VERSION
+        );
+        state.version = STATE_FORMAT_VERSION;
+    }
+
     Ok(state)
 }
 
@@ -544,7 +584,11 @@ fn save_state(state: &State, key: &[u8; 32]) -> Result<(), Box<dyn std::error::E
         fs::create_dir_all(parent)?;
     }
 
-    let plaintext = serde_json::to_vec(state)?;
+    // Ensure we always save with current version
+    let mut state_to_save = state.clone();
+    state_to_save.version = STATE_FORMAT_VERSION;
+
+    let plaintext = serde_json::to_vec(&state_to_save)?;
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
@@ -1355,5 +1399,29 @@ mod tests {
         assert_eq!(get_version(&loaded, "github.com", "user1"), 2);
         assert_eq!(get_version(&loaded, "github.com", "user2"), 3);
         assert_eq!(get_version(&loaded, "github.com", ""), 1); // domain-only defaults to 1
+    }
+
+    #[test]
+    fn test_state_version_default() {
+        // New state should have current version
+        let state = State::default();
+        assert_eq!(state.version, STATE_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn test_state_version_old_format() {
+        // Old state without version field should default to v1
+        let json = r#"{"domains":{"github.com":{"usernames":{"user1":1}}}}"#;
+        let loaded: State = serde_json::from_str(json).unwrap();
+        assert_eq!(loaded.version, 1);
+    }
+
+    #[test]
+    fn test_state_version_preserved() {
+        // Current version should be preserved in serialization
+        let state = State::default();
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: State = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.version, STATE_FORMAT_VERSION);
     }
 }

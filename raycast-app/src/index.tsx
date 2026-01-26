@@ -5,7 +5,6 @@ import {
   Form,
   Icon,
   List,
-  LocalStorage,
   showHUD,
   popToRoot,
   getPreferenceValues,
@@ -35,10 +34,8 @@ const MACOS_PATH = [
   .filter(Boolean)
   .join(":");
 
-const RECENT_DOMAINS_KEY = "recentDomains";
-const MAX_RECENT_DOMAINS = 50;
-
 type Stage =
+  | "loading-domains"
   | "select-domain"
   | "unlock-touch"
   | "select-username"
@@ -53,76 +50,31 @@ interface UsernameEntry {
   isDomainOnly?: boolean;
 }
 
-interface RecentDomain {
+interface DomainEntry {
   domain: string;
-  lastUsed: number;
+  version: number;
+  usernames: string[];
 }
 
-// Load recent domains from LocalStorage
-async function loadRecentDomains(): Promise<RecentDomain[]> {
-  try {
-    const stored = await LocalStorage.getItem<string>(RECENT_DOMAINS_KEY);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-  } catch (e) {
-    console.error("Failed to load recent domains:", e);
-  }
-  return [];
-}
-
-// Save a domain to recent history (domain only, no usernames)
-async function saveRecentDomain(domain: string): Promise<void> {
-  try {
-    const recents = await loadRecentDomains();
-    const existing = recents.find((r) => r.domain === domain);
-
-    if (existing) {
-      existing.lastUsed = Date.now();
-    } else {
-      recents.push({
-        domain,
-        lastUsed: Date.now(),
-      });
-    }
-
-    // Sort by last used, keep only recent
-    recents.sort((a, b) => b.lastUsed - a.lastUsed);
-    const trimmed = recents.slice(0, MAX_RECENT_DOMAINS);
-
-    await LocalStorage.setItem(RECENT_DOMAINS_KEY, JSON.stringify(trimmed));
-  } catch (e) {
-    console.error("Failed to save recent domain:", e);
-  }
-}
-
-// Remove a domain from recent history
-async function removeRecentDomain(domain: string): Promise<void> {
-  try {
-    const recents = await loadRecentDomains();
-    const filtered = recents.filter((r) => r.domain !== domain);
-    await LocalStorage.setItem(RECENT_DOMAINS_KEY, JSON.stringify(filtered));
-  } catch (e) {
-    console.error("Failed to remove recent domain:", e);
-  }
-}
-
-// Parse usernames from CLI output
-function parseUsernames(output: string): UsernameEntry[] {
-  const entries: UsernameEntry[] = [];
+// Parse domains from --list output
+function parseDomains(output: string): DomainEntry[] {
+  const entries: DomainEntry[] = [];
   const lines = output.split("\n");
 
   for (const line of lines) {
-    const match = line.match(/\[(\d+)\]\s+(.+)/);
+    // Match: "domain.com (v1)" or "domain.com (v2)"
+    const match = line.match(/^(\S+)\s+\(v(\d+)\)/);
     if (match) {
-      entries.push({ index: match[1], name: match[2].trim() });
-    }
-    if (line.includes("[d]") && line.toLowerCase().includes("domain")) {
       entries.push({
-        index: "d",
-        name: "Domain-only mode",
-        isDomainOnly: true,
+        domain: match[1],
+        version: parseInt(match[2], 10),
+        usernames: [],
       });
+    }
+    // Capture usernames (lines starting with "  - ")
+    const usernameMatch = line.match(/^\s+-\s+(.+)/);
+    if (usernameMatch && entries.length > 0) {
+      entries[entries.length - 1].usernames.push(usernameMatch[1].trim());
     }
   }
 
@@ -130,10 +82,11 @@ function parseUsernames(output: string): UsernameEntry[] {
 }
 
 export default function Command() {
-  const [stage, setStage] = useState<Stage>("select-domain");
-  const [recentDomains, setRecentDomains] = useState<RecentDomain[]>([]);
+  const [stage, setStage] = useState<Stage>("loading-domains");
+  const [domains, setDomains] = useState<DomainEntry[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>("");
   const [selectedUsername, setSelectedUsername] = useState<string>("");
+  const [selectedVersion, setSelectedVersion] = useState<number>(1);
   const [usernames, setUsernames] = useState<UsernameEntry[]>([]);
   const [output, setOutput] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -143,9 +96,9 @@ export default function Command() {
   const processRef = useRef<ChildProcess | null>(null);
   const outputBufferRef = useRef<string>("");
 
-  // Load recent domains on mount
+  // Load domains from CLI state on mount
   useEffect(() => {
-    loadRecentDomains().then(setRecentDomains);
+    loadDomainsFromState();
   }, []);
 
   // Cleanup process on unmount
@@ -157,11 +110,53 @@ export default function Command() {
     };
   }, []);
 
-  // Remove domain from cache and refresh list
-  const handleRemoveDomain = useCallback(async (domain: string) => {
-    await removeRecentDomain(domain);
-    const updated = await loadRecentDomains();
-    setRecentDomains(updated);
+  // Load domains by calling CLI with --list
+  const loadDomainsFromState = useCallback(() => {
+    setStage("loading-domains");
+    outputBufferRef.current = "";
+    setOutput("");
+    setError("");
+
+    const proc = spawn(PASSWORD_GENERATOR_PATH, ["--list"], {
+      env: { ...process.env, PATH: MACOS_PATH },
+    });
+
+    processRef.current = proc;
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+
+      if (text.includes("Touch YubiKey to unlock state")) {
+        setStage("unlock-touch");
+      } else if (text.toLowerCase().includes("error")) {
+        setError(outputBufferRef.current);
+        setStage("error");
+      }
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        const parsed = parseDomains(outputBufferRef.current);
+        setDomains(parsed);
+        setStage("select-domain");
+      } else if (code !== null) {
+        setError(outputBufferRef.current || `Process exited with code ${code}`);
+        setStage("error");
+      }
+    });
+
+    proc.on("error", (err) => {
+      setError(
+        `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
+      );
+      setStage("error");
+    });
   }, []);
 
   // Delete user from CLI state (requires YubiKey touch)
@@ -188,11 +183,19 @@ export default function Command() {
 
       if (text.includes("Deleted username")) {
         showHUD(`Deleted "${username}" from ${domain}`);
-        // Restart flow for this domain
-        setTimeout(() => startProcess(domain), 500);
+        // Update local state and go back to username selection
+        setUsernames((prev) => prev.filter((u) => u.name !== username));
+        setDomains((prev) =>
+          prev.map((d) =>
+            d.domain === domain
+              ? { ...d, usernames: d.usernames.filter((u) => u !== username) }
+              : d,
+          ),
+        );
+        setStage("select-username");
       } else if (text.includes("not found")) {
         showHUD(`Username "${username}" not found`);
-        setTimeout(() => startProcess(domain), 500);
+        setStage("select-username");
       }
     });
 
@@ -203,7 +206,7 @@ export default function Command() {
   }, []);
 
   // Delete domain from CLI state (requires YubiKey touch)
-  const handleDeleteDomainFromState = useCallback((domain: string) => {
+  const handleDeleteDomain = useCallback((domain: string) => {
     // Kill current process
     if (processRef.current) {
       processRef.current.kill();
@@ -224,11 +227,9 @@ export default function Command() {
 
       if (text.includes("Deleted domain")) {
         showHUD(`Deleted "${domain}" from state`);
-        // Also remove from local cache and go back to domain selection
-        removeRecentDomain(domain).then(() => {
-          loadRecentDomains().then(setRecentDomains);
-          setStage("select-domain");
-        });
+        // Update local state and go back to domain selection
+        setDomains((prev) => prev.filter((d) => d.domain !== domain));
+        setStage("select-domain");
       } else if (text.includes("not found")) {
         showHUD(`Domain "${domain}" not found in state`);
         setStage("select-domain");
@@ -241,88 +242,134 @@ export default function Command() {
     });
   }, []);
 
-  const startProcess = useCallback((domain: string) => {
-    // Save domain locally and clear search
-    saveRecentDomain(domain);
-    setSelectedDomain(domain);
-    setSearchText("");
-    setUsernameSearch("");
-    outputBufferRef.current = "";
-    setOutput("");
-    setError("");
+  // Select domain and show username selection from cached data
+  const selectDomain = useCallback(
+    (domain: string, cachedUsernames?: string[], version?: number) => {
+      setSelectedDomain(domain);
+      setSelectedVersion(version ?? 1);
+      setSearchText("");
+      setUsernameSearch("");
 
-    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain], {
-      env: { ...process.env, PATH: MACOS_PATH },
-    });
+      // Build usernames list for selection
+      const usernameEntries: UsernameEntry[] = [];
 
-    processRef.current = proc;
+      // Add domain-only option first
+      usernameEntries.push({
+        index: "d",
+        name: "Domain-only mode",
+        isDomainOnly: true,
+      });
 
-    proc.stdout?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      outputBufferRef.current += text;
-      setOutput((prev) => prev + text);
-
-      if (text.includes("copied to clipboard")) {
-        setStage("success");
-        showHUD("Password copied to clipboard!");
-        setTimeout(() => popToRoot(), 1000);
+      // Add cached usernames if available
+      if (cachedUsernames) {
+        cachedUsernames.forEach((name, i) => {
+          usernameEntries.push({ index: String(i + 1), name });
+        });
       }
-    });
 
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      outputBufferRef.current += text;
-      setOutput((prev) => prev + text);
+      setUsernames(usernameEntries);
+      setStage("select-username");
+    },
+    [],
+  );
 
-      if (text.includes("Touch YubiKey to unlock state")) {
-        setStage("unlock-touch");
-      } else if (text.includes("Usernames for")) {
-        setTimeout(() => {
-          const parsed = parseUsernames(outputBufferRef.current);
-          // Always add domain-only option if not already present
-          if (!parsed.some((p) => p.isDomainOnly)) {
-            parsed.unshift({
-              index: "d",
-              name: "Domain-only mode",
-              isDomainOnly: true,
-            });
-          }
-          setUsernames(parsed);
-          setStage("select-username");
-        }, 100);
-      } else if (text.includes("Touch YubiKey for password")) {
-        setStage("password-touch");
-      } else if (text.includes("Enter PIN:")) {
-        setStage("enter-pin");
-      } else if (text.includes("copied to clipboard")) {
-        setStage("success");
-        showHUD("Password copied to clipboard!");
-        setTimeout(() => popToRoot(), 1000);
-      } else if (text.toLowerCase().includes("error")) {
-        setError(outputBufferRef.current);
+  // Start password generation with specific domain, optional username, and version
+  const startProcess = useCallback(
+    (domain: string, username?: string, version?: number) => {
+      // Prevent multiple simultaneous processes
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
+      }
+
+      setSelectedDomain(domain);
+      if (username) {
+        setSelectedUsername(username);
+      }
+      outputBufferRef.current = "";
+      setOutput("");
+      setError("");
+
+      // Immediately show password-touch stage (we skip state unlock with --skip-state)
+      setStage("password-touch");
+
+      // Build args: use --skip-state to avoid second state unlock
+      const args = [domain, "--skip-state"];
+      if (username) {
+        args.push("-u", username);
+      }
+      // Always pass version (default to 1 if not provided)
+      args.push("-v", String(version ?? 1));
+
+      const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      processRef.current = proc;
+
+      proc.stdout?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+        setOutput((prev) => prev + text);
+
+        if (text.includes("copied to clipboard")) {
+          setStage("success");
+          showHUD("Password copied to clipboard!");
+          setTimeout(() => popToRoot(), 1000);
+        }
+      });
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+        setOutput((prev) => prev + text);
+
+        // Check accumulated buffer to determine stage (handles buffering issues)
+        const buffer = outputBufferRef.current;
+
+        if (buffer.includes("Enter PIN:")) {
+          setStage("enter-pin");
+        } else if (buffer.includes("Touch YubiKey for password")) {
+          setStage("password-touch");
+        }
+
+        // Check latest text for completion/error
+        if (text.includes("copied to clipboard")) {
+          setStage("success");
+          showHUD("Password copied to clipboard!");
+          setTimeout(() => popToRoot(), 1000);
+        } else if (
+          text.toLowerCase().includes("error") &&
+          !text.includes("Touch YubiKey")
+        ) {
+          setError(outputBufferRef.current);
+          setStage("error");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(
+          `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
+        );
         setStage("error");
-      }
-    });
+      });
 
-    proc.on("error", (err) => {
-      setError(
-        `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
-      );
-      setStage("error");
-    });
-
-    proc.on("close", (code) => {
-      // code is null when process is killed intentionally
-      if (
-        code !== 0 &&
-        code !== null &&
-        !outputBufferRef.current.includes("copied to clipboard")
-      ) {
-        setError(outputBufferRef.current || `Process exited with code ${code}`);
-        setStage("error");
-      }
-    });
-  }, []);
+      proc.on("close", (code) => {
+        // code is null when process is killed intentionally
+        if (
+          code !== 0 &&
+          code !== null &&
+          !outputBufferRef.current.includes("copied to clipboard")
+        ) {
+          setError(
+            outputBufferRef.current || `Process exited with code ${code}`,
+          );
+          setStage("error");
+        }
+      });
+    },
+    [],
+  );
 
   const sendInput = useCallback((input: string) => {
     if (processRef.current?.stdin) {
@@ -339,15 +386,27 @@ export default function Command() {
     [sendInput],
   );
 
+  // Stage: Loading domains (initial unlock)
+  if (stage === "loading-domains") {
+    return (
+      <Detail
+        markdown={`# Touch YubiKey
+
+Touch your YubiKey to unlock state and load domains...
+
+*Waiting for hardware interaction...*`}
+      />
+    );
+  }
+
   // Stage: Select Domain
   if (stage === "select-domain") {
-    const domains = recentDomains.map((r) => r.domain);
     const filteredDomains = domains.filter((d) =>
-      d.toLowerCase().includes(searchText.toLowerCase()),
+      d.domain.toLowerCase().includes(searchText.toLowerCase()),
     );
     const showNewDomainOption =
       searchText.length > 0 &&
-      !domains.some((d) => d.toLowerCase() === searchText.toLowerCase());
+      !domains.some((d) => d.domain.toLowerCase() === searchText.toLowerCase());
 
     return (
       <List
@@ -365,46 +424,53 @@ export default function Command() {
               <ActionPanel>
                 <Action
                   title="Select Domain"
-                  onAction={() => startProcess(searchText)}
+                  onAction={() => selectDomain(searchText, [], 1)}
                 />
               </ActionPanel>
             }
           />
         )}
-        <List.Section title="Recent Domains">
-          {filteredDomains.map((domain) => (
+        <List.Section title="Stored Domains">
+          {filteredDomains.map((entry) => (
             <List.Item
-              key={domain}
+              key={entry.domain}
               icon={Icon.Globe}
-              title={domain}
+              title={entry.domain}
+              subtitle={`v${entry.version}`}
+              accessories={
+                entry.usernames.length > 0
+                  ? [
+                      {
+                        text: `${entry.usernames.length} user${entry.usernames.length > 1 ? "s" : ""}`,
+                        icon: Icon.Person,
+                      },
+                    ]
+                  : undefined
+              }
               actions={
                 <ActionPanel>
                   <Action
                     title="Select Domain"
-                    onAction={() => startProcess(domain)}
-                  />
-                  <Action
-                    title="Remove from Recent"
-                    icon={Icon.XMarkCircle}
-                    shortcut={{ modifiers: ["cmd"], key: "d" }}
-                    onAction={() => handleRemoveDomain(domain)}
+                    onAction={() =>
+                      selectDomain(entry.domain, entry.usernames, entry.version)
+                    }
                   />
                   <Action
                     title="Delete from State"
                     icon={Icon.Trash}
                     style={Action.Style.Destructive}
-                    shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
-                    onAction={() => handleDeleteDomainFromState(domain)}
+                    shortcut={{ modifiers: ["cmd"], key: "d" }}
+                    onAction={() => handleDeleteDomain(entry.domain)}
                   />
                 </ActionPanel>
               }
             />
           ))}
         </List.Section>
-        {recentDomains.length === 0 && !showNewDomainOption && (
+        {domains.length === 0 && !showNewDomainOption && (
           <List.EmptyView
             icon={Icon.Key}
-            title="No recent domains"
+            title="No stored domains"
             description="Type a domain name to get started"
           />
         )}
@@ -420,14 +486,14 @@ export default function Command() {
 
 Touch your YubiKey to unlock state...
 
-**Domain:** \`${selectedDomain}\`
+${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
 
 *Waiting for hardware interaction...*`}
       />
     );
   }
 
-  // Stage: Select Username (from CLI state)
+  // Stage: Select Username (from cached data, no CLI interaction yet)
   if (stage === "select-username") {
     const filteredUsernames = usernames.filter(
       (u) =>
@@ -462,17 +528,20 @@ Touch your YubiKey to unlock state...
                 <ActionPanel>
                   <Action
                     title="Use This Username"
-                    onAction={() => {
-                      setSelectedUsername(usernameSearch);
-                      sendInput(usernameSearch);
-                    }}
+                    onAction={() =>
+                      startProcess(
+                        selectedDomain,
+                        usernameSearch,
+                        selectedVersion,
+                      )
+                    }
                   />
                 </ActionPanel>
               }
             />
           )}
 
-          {/* Existing usernames from CLI state */}
+          {/* Existing usernames from cached data */}
           {filteredUsernames.map((entry) => (
             <List.Item
               key={entry.index}
@@ -486,10 +555,19 @@ Touch your YubiKey to unlock state...
                       entry.isDomainOnly ? "Use Domain Only" : "Select Username"
                     }
                     onAction={() => {
-                      if (!entry.isDomainOnly) {
-                        setSelectedUsername(entry.name);
+                      if (entry.isDomainOnly) {
+                        startProcess(
+                          selectedDomain,
+                          undefined,
+                          selectedVersion,
+                        );
+                      } else {
+                        startProcess(
+                          selectedDomain,
+                          entry.name,
+                          selectedVersion,
+                        );
                       }
-                      sendInput(entry.index);
                     }}
                   />
                   {!entry.isDomainOnly && (
@@ -591,14 +669,15 @@ Current PATH includes:
             <Action
               title="Try Again"
               onAction={() => {
-                setStage("select-domain");
                 setOutput("");
                 setError("");
                 setUsernames([]);
                 setUsernameSearch("");
                 setSelectedUsername("");
+                setSelectedDomain("");
                 processRef.current?.kill();
                 processRef.current = null;
+                loadDomainsFromState();
               }}
             />
           </ActionPanel>

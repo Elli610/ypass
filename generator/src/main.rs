@@ -96,6 +96,7 @@ struct Args {
     list: bool,
     generate_completions: Option<String>,
     interactive: bool,
+    skip_state: bool,
 }
 
 fn main() {
@@ -111,6 +112,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Handle --generate-completions (no YubiKey needed)
     if let Some(shell) = &args.generate_completions {
         print_completions(shell)?;
+        return Ok(());
+    }
+
+    // Fast path: --skip-state mode for password generation only (no state unlock needed)
+    if args.skip_state {
+        // Requires domain and version to be provided
+        let domain = args
+            .domain
+            .as_ref()
+            .ok_or("--skip-state requires a domain")?;
+        let normalized_domain = normalize_domain(domain);
+        let username = args.username.clone().unwrap_or_default();
+        let version = args.version_override.unwrap_or(1);
+
+        // Only need YubiKey for password generation
+        eprint!("Touch YubiKey for password...");
+        io::stderr().flush()?;
+        let yubikey_seed = get_yubikey_response(&normalized_domain)?;
+        eprintln!(" OK");
+
+        // Get PIN
+        eprint!("Enter PIN: ");
+        io::stderr().flush()?;
+        let pin = read_password_no_echo()?;
+        eprintln!();
+
+        if pin.is_empty() {
+            return Err("PIN cannot be empty".into());
+        }
+
+        // Generate password
+        let password =
+            generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
+
+        // Copy to clipboard and display
+        copy_to_clipboard_with_clear(&password)?;
+        println!("{}", &*password);
+        eprintln!(
+            "\nPassword copied to clipboard. Will clear in {} seconds.",
+            CLIPBOARD_CLEAR_SECONDS
+        );
         return Ok(());
     }
 
@@ -276,6 +318,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut list = false;
     let mut generate_completions = None;
     let mut interactive = false;
+    let mut skip_state = false;
 
     // No args = interactive mode
     if args.len() == 1 {
@@ -290,6 +333,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             list: false,
             generate_completions: None,
             interactive: true,
+            skip_state: false,
         });
     }
 
@@ -337,6 +381,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "-i" | "--interactive" => {
                 interactive = true;
             }
+            "--skip-state" => {
+                skip_state = true;
+            }
             "--generate-completions" => {
                 i += 1;
                 if i >= args.len() {
@@ -372,6 +419,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         list,
         generate_completions,
         interactive,
+        skip_state,
     })
 }
 
@@ -387,6 +435,7 @@ fn print_usage(program: &str) {
     eprintln!("  --delete-domain       Delete domain and all its usernames");
     eprintln!("  --bump-version        Increment version for domain");
     eprintln!("  --list                List all domains and usernames");
+    eprintln!("  --skip-state          Skip state unlock (use with -u and -v)");
     eprintln!("  --generate-completions <shell>");
     eprintln!("                        Generate shell completions (bash, zsh, fish)");
     eprintln!("  -h, --help            Show this help");

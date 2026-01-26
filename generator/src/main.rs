@@ -1016,13 +1016,34 @@ fn copy_to_clipboard_with_clear(password: &str) -> Result<(), Box<dyn std::error
 }
 
 fn copy_clipboard_macos(password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    // Use AppleScript to copy as "concealed" - this prevents clipboard managers
+    // (Raycast, 1Password, Alfred, etc.) from storing it in clipboard history.
+    // The org.nspasteboard.ConcealedType flag marks it as sensitive data.
+    let script = format!(
+        r#"
+        use framework "AppKit"
+        set pb to current application's NSPasteboard's generalPasteboard()
+        pb's clearContents()
+        pb's setString:"{}" forType:(current application's NSPasteboardTypeString)
+        pb's setString:"" forType:"org.nspasteboard.ConcealedType"
+        "#,
+        password.replace('\\', "\\\\").replace('"', "\\\"")
+    );
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(password.as_bytes())?;
+    let output = Command::new("osascript")
+        .args(["-l", "AppleScript", "-e", &script])
+        .output()?;
+
+    if !output.status.success() {
+        // Fallback to regular pbcopy if AppleScript fails
+        let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(password.as_bytes())?;
+        }
+        child.wait()?;
     }
-    child.wait()?;
 
+    // Schedule clipboard clearing
     Command::new("sh")
         .args([
             "-c",

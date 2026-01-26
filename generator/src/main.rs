@@ -68,19 +68,12 @@ struct State {
     domains: HashMap<String, DomainState>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Domain state with per-username versions
+/// Key is username (empty string "" for domain-only mode)
+/// Value is version number
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct DomainState {
-    version: u32,
-    usernames: Vec<String>,
-}
-
-impl Default for DomainState {
-    fn default() -> Self {
-        Self {
-            version: 1,
-            usernames: Vec::new(),
-        }
-    }
+    usernames: HashMap<String, u32>,
 }
 
 /// CLI arguments

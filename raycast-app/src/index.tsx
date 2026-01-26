@@ -243,6 +243,58 @@ export default function Command() {
     });
   }, []);
 
+  // Bump version for a domain (requires YubiKey touch)
+  const handleBumpVersion = useCallback((domain: string) => {
+    if (processRef.current) {
+      processRef.current.kill();
+      processRef.current = null;
+    }
+
+    setStage("unlock-touch");
+    setOutput("");
+    outputBufferRef.current = "";
+
+    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain, "--bump-version"], {
+      env: { ...process.env, PATH: MACOS_PATH },
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      outputBufferRef.current += text;
+
+      // Match "Bumped version for 'domain' from X to Y"
+      const match = text.match(/from (\d+) to (\d+)/);
+      if (match) {
+        const newVersion = parseInt(match[2], 10);
+        showHUD(`Version bumped to v${newVersion}`);
+        // Update local state
+        setDomains((prev) =>
+          prev.map((d) =>
+            d.domain === domain ? { ...d, version: newVersion } : d,
+          ),
+        );
+        setSelectedVersion(newVersion);
+        setStage("select-domain");
+      } else if (text.includes("not found")) {
+        showHUD(`Domain "${domain}" not found`);
+        setStage("select-domain");
+      }
+    });
+
+    proc.on("error", (err) => {
+      setError(`Failed to bump version: ${err.message}`);
+      setStage("error");
+    });
+  }, []);
+
+  // Go back to domain selection
+  const goBackToDomains = useCallback(() => {
+    setSelectedDomain("");
+    setSelectedUsername("");
+    setUsernameSearch("");
+    setStage("select-domain");
+  }, []);
+
   // Select domain and show username selection from cached data
   const selectDomain = useCallback(
     (
@@ -480,6 +532,18 @@ Touch your YubiKey to unlock state and load domains...
                     }
                   />
                   <Action
+                    title="Bump Version"
+                    icon={Icon.Plus}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    onAction={() => handleBumpVersion(entry.domain)}
+                  />
+                  <Action
+                    title="Refresh Domains"
+                    icon={Icon.ArrowClockwise}
+                    shortcut={{ modifiers: ["cmd"], key: "r" }}
+                    onAction={() => loadDomainsFromState()}
+                  />
+                  <Action
                     title="Delete from State"
                     icon={Icon.Trash}
                     style={Action.Style.Destructive}
@@ -561,6 +625,18 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       )
                     }
                   />
+                  <Action
+                    title="Bump Version"
+                    icon={Icon.Plus}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    onAction={() => handleBumpVersion(selectedDomain)}
+                  />
+                  <Action
+                    title="Back to Domains"
+                    icon={Icon.ArrowLeft}
+                    shortcut={{ modifiers: [], key: "escape" }}
+                    onAction={goBackToDomains}
+                  />
                 </ActionPanel>
               }
             />
@@ -610,6 +686,18 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       }
                     />
                   )}
+                  <Action
+                    title="Bump Version"
+                    icon={Icon.Plus}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    onAction={() => handleBumpVersion(selectedDomain)}
+                  />
+                  <Action
+                    title="Back to Domains"
+                    icon={Icon.ArrowLeft}
+                    shortcut={{ modifiers: [], key: "escape" }}
+                    onAction={goBackToDomains}
+                  />
                 </ActionPanel>
               }
             />

@@ -19,6 +19,7 @@ Same inputs always produce the same password. No password storage needed.
 - **Domain normalization**: `GitHub.com`, `https://www.github.com/path` all normalize to `github.com`
 - **Multi-account support**: Different passwords for different usernames on the same domain
 - **Password rotation**: Bump version to generate new passwords without changing PIN
+- **PIN verification**: Detects typos before generating wrong passwords (requires YubiKey)
 - **Encrypted state file**: Usernames and versions stored in `~/.config/dpg/state.enc`, encrypted with YubiKey
 - **Interactive mode**: Run without arguments to search and select from stored domains
 - **Shell completions**: Tab completion for bash, zsh, and fish
@@ -126,6 +127,8 @@ Options:
   --bump-version          Increment version (use with -u for specific username)
   --list                  List all domains and usernames
   --skip-state            Skip state unlock, use with -u and -v (for scripts/integrations)
+  --reset-pin             Reset PIN verification (use when changing PIN)
+  --check-pin             Verify PIN from stdin (exit 0=ok, 1=wrong, no YubiKey needed)
   --generate-completions <shell>
                           Generate shell completions (bash, zsh, fish)
   -h, --help              Show help
@@ -230,6 +233,31 @@ password-generator https://github.com
 password-generator https://www.github.com/settings
 password-generator www.github.com
 ```
+
+### PIN Verification
+
+On first use, a 2-bit checksum of your PIN is saved to `~/.config/dpg/pin.check`. On subsequent uses, the CLI checks your PIN before generating the password:
+
+- **Correct PIN**: Proceeds to generate password
+- **Wrong PIN**: Prompts to try again (75% of typos caught)
+
+This prevents most wrong passwords due to typos.
+
+```bash
+# Verify PIN without generating password (for scripts/integrations)
+echo "mypin" | password-generator --check-pin
+# Exit code: 0 = correct, 1 = wrong
+
+# If you need to change your PIN
+password-generator --reset-pin
+# Then generate a password with your new PIN - it will be saved automatically
+```
+
+**Security**: The 2-bit checksum is a minimal information leak:
+- Only 4 possible values (0-3)
+- 25% of all PINs match any given checksum
+- Attacker learns almost nothing useful
+- No YubiKey needed to verify (works with `--skip-state`)
 
 ## State File
 

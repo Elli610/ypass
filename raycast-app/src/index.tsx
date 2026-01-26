@@ -106,6 +106,7 @@ export default function Command() {
   const [usernames, setUsernames] = useState<UsernameEntry[]>([]);
   const [output, setOutput] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [pinError, setPinError] = useState<boolean>(false);
   const [searchText, setSearchText] = useState<string>("");
   const [usernameSearch, setUsernameSearch] = useState<string>("");
 
@@ -491,9 +492,27 @@ export default function Command() {
 
   const handlePinSubmit = useCallback(
     (values: { pin: string }) => {
-      if (values.pin) {
-        sendInput(values.pin);
-      }
+      if (!values.pin) return;
+
+      setPinError(false); // Clear error before checking
+
+      // First verify PIN with --check-pin (no YubiKey needed)
+      const checkProc = spawn(PASSWORD_GENERATOR_PATH, ["--check-pin"], {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      checkProc.stdin?.write(values.pin + "\n");
+      checkProc.stdin?.end();
+
+      checkProc.on("close", (code) => {
+        if (code === 0) {
+          // PIN correct, send to password generation process
+          sendInput(values.pin);
+        } else {
+          // PIN wrong, show error
+          setPinError(true);
+        }
+      });
     },
     [sendInput],
   );
@@ -766,11 +785,15 @@ Touch your YubiKey to generate password...
         {selectedUsername && (
           <Form.Description title="Username" text={selectedUsername} />
         )}
+        {pinError && (
+          <Form.Description title="" text="Wrong PIN. Please try again." />
+        )}
         <Form.PasswordField
           id="pin"
           title="PIN"
           placeholder="Enter your YubiKey PIN"
           autoFocus
+          error={pinError ? "Wrong PIN" : undefined}
         />
       </Form>
     );

@@ -176,14 +176,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         u
     } else {
-        // Interactive selection or domain-only mode
+        // Interactive selection - always prompt for username
         let usernames = get_usernames(&state, &normalized_domain);
-        if usernames.is_empty() {
-            // Domain-only mode (backward compatible)
-            String::new()
-        } else {
-            select_username(&usernames, &normalized_domain, &mut state, &mut state_modified)?
-        }
+        select_username(&usernames, &normalized_domain, &mut state, &mut state_modified)?
     };
 
     // Determine version
@@ -723,14 +718,19 @@ fn select_username(
 
     eprintln!();
     eprintln!("Usernames for '{}':", domain);
-    let display_count = usernames.len().min(MAX_DISPLAY);
-    for (i, u) in usernames.iter().take(display_count).enumerate() {
-        eprintln!("  [{}] {}", i + 1, u);
+
+    if usernames.is_empty() {
+        eprintln!("  (no saved usernames)");
+    } else {
+        let display_count = usernames.len().min(MAX_DISPLAY);
+        for (i, u) in usernames.iter().take(display_count).enumerate() {
+            eprintln!("  [{}] {}", i + 1, u);
+        }
+        if usernames.len() > MAX_DISPLAY {
+            eprintln!("  ... +{} more (Tab to complete)", usernames.len() - MAX_DISPLAY);
+        }
     }
-    if usernames.len() > MAX_DISPLAY {
-        eprintln!("  ... +{} more (Tab to complete)", usernames.len() - MAX_DISPLAY);
-    }
-    eprintln!("  [d] domain-only mode");
+    eprintln!("  [d] domain-only mode (or press Enter with empty input)");
     eprintln!();
 
     let completer = StringCompleter::new(usernames.to_vec());
@@ -745,9 +745,9 @@ fn select_username(
         Err(e) => return Err(e.into()),
     };
 
-    // Empty input = first username (default)
+    // Empty input = domain-only mode
     if input.is_empty() {
-        return Ok(usernames[0].clone());
+        return Ok(String::new());
     }
 
     // Domain-only mode

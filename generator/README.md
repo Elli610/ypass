@@ -42,7 +42,7 @@ For YubiKey configuration, also install ykman:
 ```bash
 ykman otp chalresp --generate --touch 1
 
-# With your own salt
+# With your own salt (up to 20 bytes, hex)
 ykman otp chalresp --touch 1
 ```
 

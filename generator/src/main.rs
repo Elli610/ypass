@@ -59,6 +59,9 @@ const PASSWORD_LENGTH: usize = 32;
 const CLIPBOARD_CLEAR_SECONDS: u64 = 20;
 const YUBIKEY_SLOT: &str = "1";
 
+/// Type for charset validation checks: (predicate, charset, byte_offset)
+type CharsetCheck = (fn(&u8) -> bool, &'static [u8], usize);
+
 /// State stored in encrypted file
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct State {
@@ -122,9 +125,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = load_state(&state_key).unwrap_or_default();
     let mut state_modified = false;
 
-    // Update domain cache for shell completions
-    update_domain_cache(&state);
-
     // Handle --list command
     if args.list {
         list_all_entries(&state);
@@ -133,19 +133,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Domain selection: interactive if not provided or -i flag
     let normalized_domain = if args.domain.is_none() || args.interactive {
-        if state.domains.is_empty() {
-            eprint!("Enter domain: ");
-            io::stderr().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
-            if input.is_empty() {
-                return Err("Domain is required".into());
-            }
-            normalize_domain(input)
-        } else {
-            select_domain(&state)?
-        }
+        select_domain(&state)?
     } else {
         normalize_domain(args.domain.as_ref().unwrap())
     };
@@ -170,6 +158,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             current + 1
         );
         return Ok(());
+    }
+
+    // Ensure domain exists in state (even for domain-only mode)
+    if !state.domains.contains_key(&normalized_domain) {
+        state.domains.insert(normalized_domain.clone(), DomainState::default());
+        state_modified = true;
     }
 
     // Determine username
@@ -609,20 +603,6 @@ fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
     let mut domains: Vec<String> = state.domains.keys().cloned().collect();
     domains.sort();
 
-    eprintln!();
-    eprintln!("Stored domains (Tab to complete):");
-    for (i, domain) in domains.iter().enumerate() {
-        let entry = state.domains.get(domain).unwrap();
-        let user_count = entry.usernames.len();
-        let user_info = if user_count == 0 {
-            String::new()
-        } else {
-            format!(" ({} user{})", user_count, if user_count == 1 { "" } else { "s" })
-        };
-        eprintln!("  [{}] {}{}", i + 1, domain, user_info);
-    }
-    eprintln!();
-
     let completer = StringCompleter::new(domains.clone());
     let mut rl = Editor::new()?;
     rl.set_helper(Some(completer));
@@ -637,13 +617,6 @@ fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
 
     if input.is_empty() {
         return Err("No domain selected".into());
-    }
-
-    // Try to parse as number
-    if let Ok(n) = input.parse::<usize>() {
-        if n >= 1 && n <= domains.len() {
-            return Ok(domains[n - 1].clone());
-        }
     }
 
     // Check if it's an exact match
@@ -665,35 +638,9 @@ fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
     Ok(normalize_domain(&input))
 }
 
-// === Domain Cache for Shell Completions ===
-
-fn get_cache_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-
-    PathBuf::from(home)
-        .join(".config")
-        .join("dpg")
-        .join("domains.cache")
-}
-
-fn update_domain_cache(state: &State) {
-    let path = get_cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let mut domains: Vec<&str> = state.domains.keys().map(|s| s.as_str()).collect();
-    domains.sort();
-    let content = domains.join("\n");
-    let _ = fs::write(&path, content);
-}
+// === Shell Completions (options only, domains/usernames require YubiKey) ===
 
 fn print_completions(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let cache_path = get_cache_path();
-    let cache_path_str = cache_path.to_string_lossy();
-
     match shell.to_lowercase().as_str() {
         "bash" => {
             println!(r#"# password-generator bash completion
@@ -705,10 +652,7 @@ _password_generator_completions() {{
     local opts="-v --version -u --user -i --interactive --add-user --bump-version --list --generate-completions -h --help"
 
     case "$prev" in
-        -v|--version)
-            return 0
-            ;;
-        -u|--user|--add-user)
+        -v|--version|-u|--user|--add-user)
             return 0
             ;;
         --generate-completions)
@@ -719,22 +663,14 @@ _password_generator_completions() {{
 
     if [[ "$cur" == -* ]]; then
         COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-    else
-        # Complete domains from cache
-        if [[ -f "{cache_path}" ]]; then
-            COMPREPLY=($(compgen -W "$(cat "{cache_path}")" -- "$cur"))
-        fi
     fi
 }}
 complete -F _password_generator_completions password-generator
-"#, cache_path = cache_path_str);
+"#);
         }
         "zsh" => {
             println!(r#"# password-generator zsh completion
 _password_generator() {{
-    local -a domains
-    local cache_file="{cache_path}"
-
     _arguments \
         '-v[Use specific version]:version:' \
         '--version[Use specific version]:version:' \
@@ -748,28 +684,13 @@ _password_generator() {{
         '--generate-completions[Generate shell completions]:shell:(bash zsh fish)' \
         '-h[Show help]' \
         '--help[Show help]' \
-        '1:domain:->domains'
-
-    case $state in
-        domains)
-            if [[ -f "$cache_file" ]]; then
-                domains=(${{(f)"$(< $cache_file)"}})
-                _describe 'domain' domains
-            fi
-            ;;
-    esac
+        '1:domain:'
 }}
 compdef _password_generator password-generator
-"#, cache_path = cache_path_str);
+"#);
         }
         "fish" => {
             println!(r#"# password-generator fish completion
-function __fish_password_generator_domains
-    if test -f "{cache_path}"
-        cat "{cache_path}"
-    end
-end
-
 # Disable file completion
 complete -c password-generator -f
 
@@ -782,10 +703,7 @@ complete -c password-generator -l bump-version -d 'Increment version for domain'
 complete -c password-generator -l list -d 'List all domains and usernames'
 complete -c password-generator -l generate-completions -d 'Generate shell completions' -xa 'bash zsh fish'
 complete -c password-generator -s h -l help -d 'Show help'
-
-# Domain completion
-complete -c password-generator -n '__fish_is_first_token' -xa '(__fish_password_generator_domains)'
-"#, cache_path = cache_path_str);
+"#);
         }
         _ => {
             return Err(format!("Unknown shell: {}. Supported: bash, zsh, fish", shell).into());
@@ -801,12 +719,18 @@ fn select_username(
     state: &mut State,
     state_modified: &mut bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    const MAX_DISPLAY: usize = 10;
+
     eprintln!();
-    eprintln!("Usernames for '{}' (Tab to complete):", domain);
-    for (i, u) in usernames.iter().enumerate() {
+    eprintln!("Usernames for '{}':", domain);
+    let display_count = usernames.len().min(MAX_DISPLAY);
+    for (i, u) in usernames.iter().take(display_count).enumerate() {
         eprintln!("  [{}] {}", i + 1, u);
     }
-    eprintln!("  Enter 'd' for domain-only mode");
+    if usernames.len() > MAX_DISPLAY {
+        eprintln!("  ... +{} more (Tab to complete)", usernames.len() - MAX_DISPLAY);
+    }
+    eprintln!("  [d] domain-only mode");
     eprintln!();
 
     let completer = StringCompleter::new(usernames.to_vec());
@@ -1052,14 +976,14 @@ fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<String>, Box<dyn std::err
     let mut password = Zeroizing::new(String::with_capacity(PASSWORD_LENGTH));
     let all_chars_len = ALL_CHARS.len();
 
-    for i in 0..PASSWORD_LENGTH {
-        let idx = bytes[i] as usize % all_chars_len;
+    for byte in bytes.iter().take(PASSWORD_LENGTH) {
+        let idx = *byte as usize % all_chars_len;
         password.push(ALL_CHARS[idx] as char);
     }
 
     let mut password_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(password.as_bytes().to_vec());
 
-    let checks: [(fn(&u8) -> bool, &[u8], usize); 4] = [
+    let checks: [CharsetCheck; 4] = [
         (|c| c.is_ascii_lowercase(), LOWERCASE, 32),
         (|c| c.is_ascii_uppercase(), UPPERCASE, 36),
         (|c| c.is_ascii_digit(), DIGITS, 40),

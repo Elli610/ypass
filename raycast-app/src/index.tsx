@@ -87,6 +87,7 @@ export default function Command() {
   const [selectedDomain, setSelectedDomain] = useState<string>("");
   const [selectedUsername, setSelectedUsername] = useState<string>("");
   const [selectedVersion, setSelectedVersion] = useState<number>(1);
+  const [isNewDomain, setIsNewDomain] = useState<boolean>(false);
   const [usernames, setUsernames] = useState<UsernameEntry[]>([]);
   const [output, setOutput] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -244,9 +245,15 @@ export default function Command() {
 
   // Select domain and show username selection from cached data
   const selectDomain = useCallback(
-    (domain: string, cachedUsernames?: string[], version?: number) => {
+    (
+      domain: string,
+      cachedUsernames?: string[],
+      version?: number,
+      isNew?: boolean,
+    ) => {
       setSelectedDomain(domain);
       setSelectedVersion(version ?? 1);
+      setIsNewDomain(isNew ?? false);
       setSearchText("");
       setUsernameSearch("");
 
@@ -274,8 +281,14 @@ export default function Command() {
   );
 
   // Start password generation with specific domain, optional username, and version
+  // isNewUsername: if true, don't use --skip-state so CLI can add the new user to state
   const startProcess = useCallback(
-    (domain: string, username?: string, version?: number) => {
+    (
+      domain: string,
+      username?: string,
+      version?: number,
+      isNewUsername?: boolean,
+    ) => {
       // Prevent multiple simultaneous processes
       if (processRef.current) {
         processRef.current.kill();
@@ -290,16 +303,20 @@ export default function Command() {
       setOutput("");
       setError("");
 
-      // Immediately show password-touch stage (we skip state unlock with --skip-state)
-      setStage("password-touch");
-
-      // Build args: use --skip-state to avoid second state unlock
-      const args = [domain, "--skip-state"];
+      // Build args based on whether this is a new username
+      const args = [domain];
+      if (isNewUsername) {
+        // New username: need state unlock to save it, then password touch
+        setStage("unlock-touch");
+      } else {
+        // Existing username: use --skip-state to avoid second state unlock
+        args.push("--skip-state");
+        args.push("-v", String(version ?? 1));
+        setStage("password-touch");
+      }
       if (username) {
         args.push("-u", username);
       }
-      // Always pass version (default to 1 if not provided)
-      args.push("-v", String(version ?? 1));
 
       const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
         env: { ...process.env, PATH: MACOS_PATH },
@@ -331,6 +348,8 @@ export default function Command() {
           setStage("enter-pin");
         } else if (buffer.includes("Touch YubiKey for password")) {
           setStage("password-touch");
+        } else if (buffer.includes("Touch YubiKey to unlock state")) {
+          setStage("unlock-touch");
         }
 
         // Check latest text for completion/error
@@ -424,7 +443,7 @@ Touch your YubiKey to unlock state and load domains...
               <ActionPanel>
                 <Action
                   title="Select Domain"
-                  onAction={() => selectDomain(searchText, [], 1)}
+                  onAction={() => selectDomain(searchText, [], 1, true)}
                 />
               </ActionPanel>
             }
@@ -452,7 +471,12 @@ Touch your YubiKey to unlock state and load domains...
                   <Action
                     title="Select Domain"
                     onAction={() =>
-                      selectDomain(entry.domain, entry.usernames, entry.version)
+                      selectDomain(
+                        entry.domain,
+                        entry.usernames,
+                        entry.version,
+                        false,
+                      )
                     }
                   />
                   <Action
@@ -523,7 +547,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
             <List.Item
               icon={Icon.Plus}
               title={`Use "${usernameSearch}"`}
-              subtitle="New username"
+              subtitle="New username (requires state unlock)"
               actions={
                 <ActionPanel>
                   <Action
@@ -533,6 +557,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         selectedDomain,
                         usernameSearch,
                         selectedVersion,
+                        true, // new username always needs state unlock
                       )
                     }
                   />
@@ -556,16 +581,20 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                     }
                     onAction={() => {
                       if (entry.isDomainOnly) {
+                        // Domain-only: needs state unlock only if new domain
                         startProcess(
                           selectedDomain,
                           undefined,
                           selectedVersion,
+                          isNewDomain,
                         );
                       } else {
+                        // Existing username: no state unlock needed
                         startProcess(
                           selectedDomain,
                           entry.name,
                           selectedVersion,
+                          false,
                         );
                       }
                     }}

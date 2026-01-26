@@ -125,6 +125,7 @@ Options:
   --delete-domain         Delete domain and all its usernames
   --bump-version          Increment version for domain
   --list                  List all domains and usernames
+  --skip-state            Skip state unlock, use with -u and -v (for scripts/integrations)
   --generate-completions <shell>
                           Generate shell completions (bash, zsh, fish)
   -h, --help              Show help

@@ -1,6 +1,6 @@
 # Password Generator
 
-A secure, deterministic password generator using YubiKey HMAC-SHA1 challenge-response.
+A secure, password manager using YubiKey HMAC-SHA1 challenge-response.
 
 ## How It Works
 

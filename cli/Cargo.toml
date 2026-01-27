@@ -3,6 +3,8 @@ name = "ypass"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+description = "A secure, password manager using YubiKey HMAC-SHA1 challenge-response"
+license = "MIT"
 
 [[bin]]
 name = "ypass"

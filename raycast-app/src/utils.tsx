@@ -6,7 +6,9 @@ import {
   Icon,
   openExtensionPreferences,
   Clipboard,
-  showHUD,
+  showToast,
+  Toast,
+  Color,
 } from "@raycast/api";
 import { spawnSync } from "child_process";
 
@@ -92,48 +94,122 @@ const YKPERS_INSTALL_CMD = "brew install ykpers";
 
 // Generate markdown based on what's missing
 function generateSetupMarkdown(status: DependencyStatus): string {
-  const sections: string[] = ["# Setup Required\n"];
+  const ypassStatus = status.ypassInstalled ? "Installed" : "Missing";
+  const ykpersStatus = status.ykpersInstalled ? "Installed" : "Missing";
+  const missingCount = (status.ypassInstalled ? 0 : 1) + (status.ykpersInstalled ? 0 : 1);
+
+  let markdown = `# Setup Required
+
+## Dependency Status
+
+| Component | Status | Required For |
+|-----------|--------|--------------|
+| ypass CLI | ${ypassStatus} | Password generation |
+| ykpers | ${ykpersStatus} | YubiKey communication |
+
+---
+
+`;
+
+  if (missingCount === 0) {
+    markdown += `All dependencies are installed! Press **Cmd+R** to retry.`;
+    return markdown;
+  }
+
+  markdown += `## Installation Instructions
+
+`;
 
   if (!status.ypassInstalled) {
-    sections.push(`## YPass CLI - Missing
+    markdown += `### 1. Install YPass CLI
 
-The ypass command-line tool is required.
-
-**Quick install with Cargo:**
+**Option A: Quick install with Cargo** (recommended)
 \`\`\`bash
 ${YPASS_INSTALL_CMD}
 \`\`\`
 
-Or build from source:
+**Option B: Build from source**
 \`\`\`bash
 git clone https://github.com/elli610/ypass
 cd ypass/cli && cargo install --path .
 \`\`\`
-`);
+
+> Requires [Rust](https://rustup.rs/) to be installed
+
+`;
   }
 
   if (!status.ykpersInstalled) {
-    sections.push(`## YubiKey Tools (ykpers) - Missing
+    markdown += `### ${status.ypassInstalled ? "1" : "2"}. Install YubiKey Tools
 
-The \`ykchalresp\` command is required for YubiKey communication.
-
-**Install with Homebrew:**
 \`\`\`bash
 ${YKPERS_INSTALL_CMD}
 \`\`\`
-`);
+
+> Provides \`ykchalresp\` for YubiKey HMAC-SHA1 challenge-response
+
+`;
   }
 
-  if (status.ypassInstalled && status.ykpersInstalled) {
-    sections.push("All dependencies are installed!");
-  }
+  markdown += `---
 
-  return sections.join("\n");
+**After installing**, press **Cmd+R** to check again.
+
+If ypass is installed in a custom location, press **Cmd+,** to set the binary path.`;
+
+  return markdown;
+}
+
+// Generate metadata for sidebar
+function generateMetadata(status: DependencyStatus) {
+  return (
+    <Detail.Metadata>
+      <Detail.Metadata.TagList title="Dependencies">
+        <Detail.Metadata.TagList.Item
+          text="ypass"
+          color={status.ypassInstalled ? Color.Green : Color.Red}
+        />
+        <Detail.Metadata.TagList.Item
+          text="ykpers"
+          color={status.ykpersInstalled ? Color.Green : Color.Red}
+        />
+      </Detail.Metadata.TagList>
+      <Detail.Metadata.Separator />
+      <Detail.Metadata.Label
+        title="ypass CLI"
+        text={status.ypassInstalled ? "Installed" : "Not found"}
+        icon={status.ypassInstalled ? Icon.CheckCircle : Icon.XMarkCircle}
+      />
+      <Detail.Metadata.Label
+        title="ykpers"
+        text={status.ykpersInstalled ? "Installed" : "Not found"}
+        icon={status.ykpersInstalled ? Icon.CheckCircle : Icon.XMarkCircle}
+      />
+      <Detail.Metadata.Separator />
+      <Detail.Metadata.Link
+        title="YPass Repository"
+        text="GitHub"
+        target="https://github.com/elli610/ypass"
+      />
+      <Detail.Metadata.Link
+        title="ykpers"
+        text="Homebrew"
+        target="https://formulae.brew.sh/formula/ykpers"
+      />
+    </Detail.Metadata>
+  );
 }
 
 // Shared component for CLI checking state
 export function CLICheckingView() {
-  return <Detail markdown="Checking dependencies..." />;
+  return (
+    <Detail
+      isLoading={true}
+      markdown="# Checking Dependencies...
+
+Verifying that all required tools are installed."
+    />
+  );
 }
 
 // Shared component for missing dependencies
@@ -146,39 +222,48 @@ export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
     if (!status.ypassInstalled) commands.push(YPASS_INSTALL_CMD);
     if (!status.ykpersInstalled) commands.push(YKPERS_INSTALL_CMD);
     await Clipboard.copy(commands.join(" && "));
-    await showHUD("Install commands copied to clipboard");
+    await showToast({
+      style: Toast.Style.Success,
+      title: "Copied",
+      message: "Install commands copied to clipboard",
+    });
   };
 
   return (
     <Detail
       markdown={markdown}
+      metadata={generateMetadata(status)}
       actions={
         <ActionPanel>
           <ActionPanel.Section title="Install">
             {(!status.ypassInstalled || !status.ykpersInstalled) && (
               <Action
-                title="Copy Install Commands"
+                title="Copy All Install Commands"
                 icon={Icon.Clipboard}
                 onAction={copyAllCommands}
               />
             )}
             {!status.ypassInstalled && (
               <Action.CopyToClipboard
-                title="Copy YPass Install Command"
+                title="Copy YPass Command"
+                icon={Icon.Terminal}
                 content={YPASS_INSTALL_CMD}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "1" }}
               />
             )}
             {!status.ykpersInstalled && (
               <Action.CopyToClipboard
-                title="Copy ykpers Install Command"
+                title="Copy ykpers Command"
+                icon={Icon.Terminal}
                 content={YKPERS_INSTALL_CMD}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "2" }}
               />
             )}
           </ActionPanel.Section>
-          <ActionPanel.Section title="Other">
+          <ActionPanel.Section title="Actions">
             {onRetry && (
               <Action
-                title="Retry"
+                title="Check Again"
                 icon={Icon.ArrowClockwise}
                 shortcut={{ modifiers: ["cmd"], key: "r" }}
                 onAction={onRetry}
@@ -189,6 +274,18 @@ export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
               icon={Icon.Gear}
               shortcut={{ modifiers: ["cmd"], key: "," }}
               onAction={openExtensionPreferences}
+            />
+          </ActionPanel.Section>
+          <ActionPanel.Section title="Links">
+            <Action.OpenInBrowser
+              title="Open YPass Repository"
+              icon={Icon.Globe}
+              url="https://github.com/elli610/ypass"
+            />
+            <Action.OpenInBrowser
+              title="Install Rust"
+              icon={Icon.Download}
+              url="https://rustup.rs/"
             />
           </ActionPanel.Section>
         </ActionPanel>

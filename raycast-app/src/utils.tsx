@@ -4,6 +4,9 @@ import {
   ActionPanel,
   Action,
   Icon,
+  openExtensionPreferences,
+  Clipboard,
+  showHUD,
 } from "@raycast/api";
 import { spawnSync } from "child_process";
 
@@ -34,6 +37,19 @@ export function getPasswordGeneratorPath(): string {
   return binaryPath || "ypass";
 }
 
+// Check if a command exists in PATH
+function commandExists(cmd: string): boolean {
+  try {
+    const result = spawnSync("which", [cmd], {
+      env: { ...process.env, PATH: MACOS_PATH },
+      timeout: 5000,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Check if the ypass CLI is installed and accessible
 export function checkCLIInstalled(): boolean {
   const binaryPath = getPasswordGeneratorPath();
@@ -48,54 +64,134 @@ export function checkCLIInstalled(): boolean {
   }
 }
 
-// Shared markdown for CLI not found message
-export const CLI_NOT_FOUND_MARKDOWN = `# YPass CLI Not Found
+// Check if ykpers (ykchalresp) is installed
+export function checkYkpersInstalled(): boolean {
+  return commandExists("ykchalresp");
+}
 
-The ypass command-line tool is required but was not found on your system.
+// Check all dependencies and return status
+export interface DependencyStatus {
+  ypassInstalled: boolean;
+  ykpersInstalled: boolean;
+  allInstalled: boolean;
+}
 
-## Installation
+export function checkDependencies(): DependencyStatus {
+  const ypassInstalled = checkCLIInstalled();
+  const ykpersInstalled = checkYkpersInstalled();
+  return {
+    ypassInstalled,
+    ykpersInstalled,
+    allInstalled: ypassInstalled && ykpersInstalled,
+  };
+}
 
-1. Clone the repository:
-   \`\`\`bash
-   git clone https://github.com/elli610/ypass
-   cd ypass/cli
-   \`\`\`
+// Install commands
+const YPASS_INSTALL_CMD = "cargo install ypass";
+const YKPERS_INSTALL_CMD = "brew install ykpers";
 
-2. Build and install:
-   \`\`\`bash
-   cargo build --release
-   cp target/release/ypass ~/.local/bin/
-   \`\`\`
+// Generate markdown based on what's missing
+function generateSetupMarkdown(status: DependencyStatus): string {
+  const sections: string[] = ["# Setup Required\n"];
 
-3. Make sure \`~/.local/bin\` is in your PATH, or update the **Binary Path** in extension preferences.
+  if (!status.ypassInstalled) {
+    sections.push(`## YPass CLI - Missing
 
-## Alternative
+The ypass command-line tool is required.
 
-You can install it with cargo install ypass
+**Quick install with Cargo:**
+\`\`\`bash
+${YPASS_INSTALL_CMD}
+\`\`\`
 
-> Crate url: [https://crates.io/crates/ypass](https://crates.io/crates/ypass)
-`;
+Or build from source:
+\`\`\`bash
+git clone https://github.com/elli610/ypass
+cd ypass/cli && cargo install --path .
+\`\`\`
+`);
+  }
+
+  if (!status.ykpersInstalled) {
+    sections.push(`## YubiKey Tools (ykpers) - Missing
+
+The \`ykchalresp\` command is required for YubiKey communication.
+
+**Install with Homebrew:**
+\`\`\`bash
+${YKPERS_INSTALL_CMD}
+\`\`\`
+`);
+  }
+
+  if (status.ypassInstalled && status.ykpersInstalled) {
+    sections.push("All dependencies are installed!");
+  }
+
+  return sections.join("\n");
+}
 
 // Shared component for CLI checking state
 export function CLICheckingView() {
-  return <Detail markdown="Checking if ypass CLI is installed..." />;
+  return <Detail markdown="Checking dependencies..." />;
 }
 
-// Shared component for CLI not found state
+// Shared component for missing dependencies
 export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
+  const status = checkDependencies();
+  const markdown = generateSetupMarkdown(status);
+
+  const copyAllCommands = async () => {
+    const commands: string[] = [];
+    if (!status.ypassInstalled) commands.push(YPASS_INSTALL_CMD);
+    if (!status.ykpersInstalled) commands.push(YKPERS_INSTALL_CMD);
+    await Clipboard.copy(commands.join(" && "));
+    await showHUD("Install commands copied to clipboard");
+  };
+
   return (
     <Detail
-      markdown={CLI_NOT_FOUND_MARKDOWN}
+      markdown={markdown}
       actions={
-        onRetry && (
-          <ActionPanel>
+        <ActionPanel>
+          <ActionPanel.Section title="Install">
+            {(!status.ypassInstalled || !status.ykpersInstalled) && (
+              <Action
+                title="Copy Install Commands"
+                icon={Icon.Clipboard}
+                onAction={copyAllCommands}
+              />
+            )}
+            {!status.ypassInstalled && (
+              <Action.CopyToClipboard
+                title="Copy YPass Install Command"
+                content={YPASS_INSTALL_CMD}
+              />
+            )}
+            {!status.ykpersInstalled && (
+              <Action.CopyToClipboard
+                title="Copy ykpers Install Command"
+                content={YKPERS_INSTALL_CMD}
+              />
+            )}
+          </ActionPanel.Section>
+          <ActionPanel.Section title="Other">
+            {onRetry && (
+              <Action
+                title="Retry"
+                icon={Icon.ArrowClockwise}
+                shortcut={{ modifiers: ["cmd"], key: "r" }}
+                onAction={onRetry}
+              />
+            )}
             <Action
-              title="Retry"
-              icon={Icon.ArrowClockwise}
-              onAction={onRetry}
+              title="Open Extension Preferences"
+              icon={Icon.Gear}
+              shortcut={{ modifiers: ["cmd"], key: "," }}
+              onAction={openExtensionPreferences}
             />
-          </ActionPanel>
-        )
+          </ActionPanel.Section>
+        </ActionPanel>
       }
     />
   );

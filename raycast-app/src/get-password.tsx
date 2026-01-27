@@ -6,6 +6,8 @@ import {
   Icon,
   List,
   showHUD,
+  showToast,
+  Toast,
   popToRoot,
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
@@ -192,7 +194,11 @@ export default function Command() {
         outputBufferRef.current += text;
 
         if (text.includes("Deleted username")) {
-          showHUD(`Deleted "${username}" from ${domain}`);
+          showToast({
+            style: Toast.Style.Success,
+            title: "Deleted",
+            message: `"${username}" from ${domain}`,
+          });
           // Update local state and go back to username selection
           setUsernames((prev) => prev.filter((u) => u.name !== username));
           setDomains((prev) =>
@@ -207,7 +213,11 @@ export default function Command() {
           );
           setStage("select-username");
         } else if (text.includes("not found")) {
-          showHUD(`Username "${username}" not found`);
+          showToast({
+            style: Toast.Style.Failure,
+            title: "Not Found",
+            message: `Username "${username}"`,
+          });
           setStage("select-username");
         }
       });
@@ -242,12 +252,20 @@ export default function Command() {
         outputBufferRef.current += text;
 
         if (text.includes("Deleted domain")) {
-          showHUD(`Deleted "${domain}" from state`);
+          showToast({
+            style: Toast.Style.Success,
+            title: "Deleted",
+            message: `"${domain}" from state`,
+          });
           // Update local state and go back to domain selection
           setDomains((prev) => prev.filter((d) => d.domain !== domain));
           setStage("select-domain");
         } else if (text.includes("not found")) {
-          showHUD(`Domain "${domain}" not found in state`);
+          showToast({
+            style: Toast.Style.Failure,
+            title: "Not Found",
+            message: `Domain "${domain}"`,
+          });
           setStage("select-domain");
         }
       });
@@ -290,7 +308,11 @@ export default function Command() {
         const match = text.match(/from (\d+) to (\d+)/);
         if (match) {
           const newVersion = parseInt(match[2], 10);
-          showHUD(`Version bumped to v${newVersion}`);
+          showToast({
+            style: Toast.Style.Success,
+            title: "Version Bumped",
+            message: `Now at v${newVersion}`,
+          });
           // Update local state
           setDomains((prev) =>
             prev.map((d) =>
@@ -315,7 +337,10 @@ export default function Command() {
           );
           setStage("select-username");
         } else if (text.includes("not found")) {
-          showHUD(`Not found`);
+          showToast({
+            style: Toast.Style.Failure,
+            title: "Not Found",
+          });
           setStage("select-username");
         }
       });

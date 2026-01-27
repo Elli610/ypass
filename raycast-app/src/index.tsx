@@ -7,32 +7,12 @@ import {
   List,
   showHUD,
   popToRoot,
-  getPreferenceValues,
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
 
-interface Preferences {
-  binaryPath: string;
-}
-
-const { binaryPath } = getPreferenceValues<Preferences>();
-const PASSWORD_GENERATOR_PATH = binaryPath || "password-generator";
-
-// Comprehensive PATH for macOS - covers Homebrew on both Intel and Apple Silicon
-const MACOS_PATH = [
-  "/opt/homebrew/bin", // Apple Silicon Homebrew
-  "/usr/local/bin", // Intel Homebrew
-  "/opt/homebrew/sbin",
-  "/usr/local/sbin",
-  "/usr/bin",
-  "/bin",
-  "/usr/sbin",
-  "/sbin",
-  process.env.PATH,
-]
-  .filter(Boolean)
-  .join(":");
+const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
 
 type Stage =
   | "loading-domains"

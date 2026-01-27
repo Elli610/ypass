@@ -19,7 +19,7 @@ Same inputs always produce the same password. No password storage needed.
 - **Domain normalization**: `GitHub.com`, `https://www.github.com/path` all normalize to `github.com`
 - **Multi-account support**: Different passwords for different usernames on the same domain
 - **Password rotation**: Bump version to generate new passwords without changing PIN
-- **PIN verification**: Detects typos before generating wrong passwords (requires YubiKey)
+- **PIN verification**: Detects typos before generating wrong passwords (no YubiKey required)
 - **Encrypted state file**: Usernames and versions stored in `~/.config/dpg/state.enc`, encrypted with YubiKey
 - **Interactive mode**: Run without arguments to search and select from stored domains
 - **Shell completions**: Tab completion for bash, zsh, and fish
@@ -109,7 +109,7 @@ password-generator github.com
 1. Touch YubiKey to unlock state file
 2. Touch YubiKey again for password generation
 3. Enter your PIN
-4. Password is displayed and copied to clipboard
+4. Password is copied to clipboard (use `-p` to also print to stdout)
 5. Clipboard auto-clears after 20 seconds
 
 ### Command Line Options
@@ -121,6 +121,8 @@ Options:
   -v, --version <n>       Use specific version (default: latest from state)
   -u, --user <name>       Use specific username (skip interactive selection)
   -i, --interactive       Interactive domain selection
+  -p, --print             Print password to stdout (default: clipboard only)
+  --no-clipboard          Don't copy to clipboard (use with -p for piping)
   --add-user <name>       Add username to domain (no password generated)
   --delete-user <name>    Delete username from domain
   --delete-domain         Delete domain and all its usernames
@@ -141,20 +143,15 @@ Run without arguments to enter interactive mode:
 ```bash
 password-generator
 # Output:
-# Stored domains:
-#   [1] github.com (2 users)
-#   [2] gmail.com (3 users)
-#   [3] twitter.com
-#   [n] Enter new domain
+# Domain: <tab completion available>
 #
-# Select or search: git
-# -> Matches "github.com", proceeds to username selection
+# Type a domain name (Tab to complete from stored domains)
+# -> New domains are added automatically
 ```
 
 You can:
-- Enter a number to select a domain
-- Type part of a domain name to search (substring match)
-- Enter `n` to add a new domain
+- Type part of a domain name and press Tab to autocomplete
+- Enter any new domain name directly (it will be added to state)
 
 ### Multi-Account Support
 
@@ -171,9 +168,9 @@ password-generator gmail.com
 # Usernames for 'gmail.com':
 #   [1] personal@gmail.com
 #   [2] work@gmail.com
-#   [n] Add new username
-#   [d] Use domain-only (no username)
-# Select [1]:
+#   [d] domain-only mode (or press Enter with empty input)
+#
+# Username: <tab completion available>
 
 # Or specify username directly
 password-generator gmail.com -u personal@gmail.com
@@ -258,6 +255,24 @@ password-generator --reset-pin
 - 25% of all PINs match any given checksum
 - Attacker learns almost nothing useful
 - No YubiKey needed to verify (works with `--skip-state`)
+
+### Output Options
+
+By default, the password is only copied to clipboard (not printed to stdout) for security:
+
+```bash
+# Default: clipboard only
+password-generator github.com
+
+# Print to stdout (and clipboard)
+password-generator github.com -p
+
+# Print to stdout only (no clipboard) - useful for piping
+password-generator github.com --no-clipboard -p
+
+# Pipe to another program
+password-generator github.com --no-clipboard -p | some-other-tool
+```
 
 ## State File
 
@@ -345,13 +360,6 @@ source ~/.zshrc
 ```bash
 password-generator --generate-completions fish > ~/.config/fish/completions/password-generator.fish
 ```
-
-### How It Works
-
-- A plaintext cache of domain names is stored at `~/.config/dpg/domains.cache`
-- The cache is updated every time you use the tool (after YubiKey unlock)
-- Tab completion reads from this cache (no YubiKey needed for completion)
-- Usernames are NOT cached (they remain encrypted)
 
 ## Backward Compatibility
 

@@ -15,8 +15,8 @@
 
 use argon2::{Argon2, Params, Version};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit},
 };
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -52,6 +52,8 @@ const DIGITS: &[u8] = b"0123456789";
 const SYMBOLS: &[u8] = b"!@#$%^&*()-_=+[]{}|;:,.<>?";
 
 /// All characters combined for password generation
+/// NOTE: This must be kept in sync with LOWERCASE + UPPERCASE + DIGITS + SYMBOLS
+/// (Rust doesn't support const array concatenation, see test_all_chars_consistency)
 const ALL_CHARS: &[u8] =
     b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?";
 
@@ -113,6 +115,9 @@ struct Args {
     skip_state: bool,
     reset_pin: bool,
     check_pin: bool,
+    print_password: bool,
+    no_clipboard: bool,
+    show_app_version: bool,
 }
 
 fn main() {
@@ -128,6 +133,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Handle --generate-completions (no YubiKey needed)
     if let Some(shell) = &args.generate_completions {
         print_completions(shell)?;
+        return Ok(());
+    }
+
+    // Handle --app-version (no YubiKey needed)
+    if args.show_app_version {
+        println!("password-generator {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -156,7 +167,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let domain = args
             .domain
             .as_ref()
-            .ok_or("--skip-state requires a domain")?;
+            .ok_or("--skip-state requires a domain argument")?;
         let normalized_domain = normalize_domain(domain);
         let username = args.username.clone().unwrap_or_default();
         let version = args.version_override.unwrap_or(1);
@@ -199,13 +210,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let password =
             generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
 
-        // Copy to clipboard and display
-        copy_to_clipboard_with_clear(&password)?;
-        println!("{}", &*password);
-        eprintln!(
-            "\nPassword copied to clipboard. Will clear in {} seconds.",
-            CLIPBOARD_CLEAR_SECONDS
-        );
+        // Output password based on flags
+        if !args.no_clipboard {
+            copy_to_clipboard_with_clear(&password)?;
+        }
+
+        if args.print_password {
+            println!("{}", &*password);
+        }
+
+        // Show status message
+        if !args.no_clipboard {
+            eprintln!(
+                "\nPassword copied to clipboard. Will clear in {} seconds.",
+                CLIPBOARD_CLEAR_SECONDS
+            );
+        } else if !args.print_password {
+            eprintln!("\nPassword generated (use -p to print or remove --no-clipboard to copy).");
+        }
         return Ok(());
     }
 
@@ -231,7 +253,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Handle --reset-pin command
     if args.reset_pin {
         if delete_pin_checksum()? {
-            eprintln!("PIN verification reset. Your new PIN will be saved on next password generation.");
+            eprintln!(
+                "PIN verification reset. Your new PIN will be saved on next password generation."
+            );
         } else {
             eprintln!("PIN verification was not set up yet.");
         }
@@ -249,7 +273,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(username) = args.add_user {
         add_username(&mut state, &normalized_domain, &username);
         save_state(&state, &state_key)?;
-        eprintln!("Added username '{}' to domain '{}'", username, normalized_domain);
+        eprintln!(
+            "Added username '{}' to domain '{}'",
+            username, normalized_domain
+        );
         return Ok(());
     }
 
@@ -294,9 +321,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(domain_state) = state.domains.get_mut(&normalized_domain) {
             if domain_state.usernames.remove(&username).is_some() {
                 save_state(&state, &state_key)?;
-                eprintln!("Deleted username '{}' from domain '{}'", username, normalized_domain);
+                eprintln!(
+                    "Deleted username '{}' from domain '{}'",
+                    username, normalized_domain
+                );
             } else {
-                eprintln!("Username '{}' not found in domain '{}'", username, normalized_domain);
+                eprintln!(
+                    "Username '{}' not found in domain '{}'",
+                    username, normalized_domain
+                );
             }
         } else {
             eprintln!("Domain '{}' not found", normalized_domain);
@@ -306,7 +339,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Ensure domain exists in state (even for domain-only mode)
     if !state.domains.contains_key(&normalized_domain) {
-        state.domains.insert(normalized_domain.clone(), DomainState::default());
+        state
+            .domains
+            .insert(normalized_domain.clone(), DomainState::default());
         state_modified = true;
     }
 
@@ -322,7 +357,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         // Interactive selection - always prompt for username
         let usernames = get_usernames(&state, &normalized_domain);
-        select_username(&usernames, &normalized_domain, &mut state, &mut state_modified)?
+        select_username(
+            &usernames,
+            &normalized_domain,
+            &mut state,
+            &mut state_modified,
+        )?
     };
 
     // Determine version (per-username)
@@ -372,12 +412,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         save_state(&state, &state_key)?;
     }
 
-    // Step 7: Copy to clipboard and schedule clear
-    copy_to_clipboard_with_clear(&password)?;
+    // Step 7: Copy to clipboard (unless --no-clipboard)
+    if !args.no_clipboard {
+        copy_to_clipboard_with_clear(&password)?;
+    }
 
-    // Step 8: Display password (for terminal use)
-    println!("{}", &*password);
+    // Step 8: Display password (only if --print)
+    if args.print_password {
+        println!("{}", &*password);
+    }
 
+    // Step 9: Show status message
     let info = if username.is_empty() {
         format!("domain={}, v{}", normalized_domain, version)
     } else {
@@ -386,10 +431,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             normalized_domain, username, version
         )
     };
-    eprintln!(
-        "Password copied to clipboard ({}). Will be cleared in {CLIPBOARD_CLEAR_SECONDS} seconds.",
-        info
-    );
+
+    if !args.no_clipboard {
+        eprintln!(
+            "Password copied to clipboard ({}). Will be cleared in {CLIPBOARD_CLEAR_SECONDS} seconds.",
+            info
+        );
+    } else if !args.print_password {
+        eprintln!(
+            "Password generated ({}). Use -p to print or remove --no-clipboard to copy.",
+            info
+        );
+    }
 
     Ok(())
 }
@@ -411,6 +464,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut skip_state = false;
     let mut reset_pin = false;
     let mut check_pin = false;
+    let mut print_password = false;
+    let mut no_clipboard = false;
+    let mut show_app_version = false;
 
     // No args = interactive mode
     if args.len() == 1 {
@@ -428,6 +484,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             skip_state: false,
             reset_pin: false,
             check_pin: false,
+            print_password: false,
+            no_clipboard: false,
+            show_app_version: false,
         });
     }
 
@@ -484,10 +543,21 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--check-pin" => {
                 check_pin = true;
             }
+            "--app-version" => {
+                show_app_version = true;
+            }
+            "-p" | "--print" => {
+                print_password = true;
+            }
+            "--no-clipboard" => {
+                no_clipboard = true;
+            }
             "--generate-completions" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("--generate-completions requires shell name (bash, zsh, fish)".into());
+                    return Err(
+                        "--generate-completions requires shell name (bash, zsh, fish)".into(),
+                    );
                 }
                 generate_completions = Some(args[i].clone());
             }
@@ -522,6 +592,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         skip_state,
         reset_pin,
         check_pin,
+        print_password,
+        no_clipboard,
+        show_app_version,
     })
 }
 
@@ -532,22 +605,36 @@ fn print_usage(program: &str) {
     eprintln!("  -v, --version <n>     Use specific version (default: latest from state)");
     eprintln!("  -u, --user <name>     Use specific username (skip interactive)");
     eprintln!("  -i, --interactive     Interactive domain selection");
+    eprintln!("  -p, --print           Print password to stdout (default: clipboard only)");
+    eprintln!("  --no-clipboard        Don't copy to clipboard (use with -p for piping)");
     eprintln!("  --add-user <name>     Add username to domain");
     eprintln!("  --delete-user <name>  Delete username from domain");
     eprintln!("  --delete-domain       Delete domain and all its usernames");
     eprintln!("  --bump-version        Increment version for domain");
     eprintln!("  --list                List all domains and usernames");
-    eprintln!("  --skip-state          Skip state unlock (use with -u and -v)");
+    eprintln!("  --skip-state          Skip state unlock (requires domain, optionally -u and -v)");
     eprintln!("  --reset-pin           Reset PIN verification (use when changing PIN)");
     eprintln!("  --check-pin           Verify PIN from stdin (exit 0=ok, 1=wrong)");
+    eprintln!("  --app-version         Show application version");
     eprintln!("  --generate-completions <shell>");
     eprintln!("                        Generate shell completions (bash, zsh, fish)");
     eprintln!("  -h, --help            Show this help");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  {}                    Interactive mode (select domain)", program);
+    eprintln!(
+        "  {}                    Interactive mode (select domain)",
+        program
+    );
     eprintln!("  {} github.com", program);
     eprintln!("  {} github.com -u myuser", program);
+    eprintln!(
+        "  {} github.com -p             # Print password to stdout",
+        program
+    );
+    eprintln!(
+        "  {} github.com --no-clipboard -p  # Print only, no clipboard",
+        program
+    );
     eprintln!("  {} gmail.com --add-user work@gmail.com", program);
     eprintln!("  {} github.com --delete-user olduser", program);
     eprintln!("  {} github.com --delete-domain", program);
@@ -558,11 +645,16 @@ fn print_usage(program: &str) {
     eprintln!("Shell completions:");
     eprintln!("  {} --generate-completions bash >> ~/.bashrc", program);
     eprintln!("  {} --generate-completions zsh >> ~/.zshrc", program);
-    eprintln!("  {} --generate-completions fish > ~/.config/fish/completions/{}.fish", program, program);
+    eprintln!(
+        "  {} --generate-completions fish > ~/.config/fish/completions/{}.fish",
+        program, program
+    );
     eprintln!();
     eprintln!("Requirements:");
     eprintln!("  YubiKey: ykchalresp (brew install ykpers / apt install yubikey-personalization)");
-    eprintln!("  Setup:   ykman otp chalresp --generate 1  (brew install ykman to configure)");
+    eprintln!(
+        "  Setup:   ykman otp chalresp --generate --touch 1  (brew install ykman to configure)"
+    );
 }
 
 /// Normalize domain for consistent password generation
@@ -581,9 +673,19 @@ fn normalize_domain(input: &str) -> String {
         domain = rest.to_string();
     }
 
-    // Remove trailing slashes and paths
-    if let Some(pos) = domain.find('/') {
+    // Remove trailing slashes, paths, query strings, and fragments
+    // Find the first occurrence of /, ?, or # and truncate
+    if let Some(pos) = domain.find(['/', '?', '#']) {
         domain.truncate(pos);
+    }
+
+    // Remove port numbers (e.g., localhost:3000 -> localhost)
+    if let Some(pos) = domain.rfind(':') {
+        // Only remove if what follows looks like a port number
+        let potential_port = &domain[pos + 1..];
+        if !potential_port.is_empty() && potential_port.chars().all(|c| c.is_ascii_digit()) {
+            domain.truncate(pos);
+        }
     }
 
     domain
@@ -602,7 +704,9 @@ fn get_state_path() -> PathBuf {
         .join("state.enc")
 }
 
-fn derive_state_key(yubikey_response: &[u8]) -> Result<Zeroizing<[u8; 32]>, Box<dyn std::error::Error>> {
+fn derive_state_key(
+    yubikey_response: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, Box<dyn std::error::Error>> {
     let params = Params::new(65536, 3, 4, Some(32))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
@@ -628,8 +732,7 @@ fn load_state(key: &[u8; 32]) -> Result<State, Box<dyn std::error::Error>> {
     let nonce = Nonce::from_slice(&encrypted[..12]);
     let ciphertext = &encrypted[12..];
 
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| "Invalid key length")?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| "Invalid key length")?;
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| "Failed to decrypt state file")?;
@@ -642,7 +745,8 @@ fn load_state(key: &[u8; 32]) -> Result<State, Box<dyn std::error::Error>> {
             "State file is from a newer version (v{}) than this CLI supports (v{}). \
              Please update the CLI.",
             state.version, STATE_FORMAT_VERSION
-        ).into());
+        )
+        .into());
     }
 
     // Upgrade old state format to current version
@@ -676,8 +780,7 @@ fn save_state(state: &State, key: &[u8; 32]) -> Result<(), Box<dyn std::error::E
     getrandom(&mut nonce_bytes)?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| "Invalid key length")?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| "Invalid key length")?;
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_slice())
         .map_err(|_| "Failed to encrypt state")?;
@@ -924,7 +1027,10 @@ fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
     }
 
     // Check if it's an exact match
-    if domains.iter().any(|d| d.to_lowercase() == input.to_lowercase()) {
+    if domains
+        .iter()
+        .any(|d| d.to_lowercase() == input.to_lowercase())
+    {
         return Ok(normalize_domain(&input));
     }
 
@@ -947,16 +1053,17 @@ fn select_domain(state: &State) -> Result<String, Box<dyn std::error::Error>> {
 fn print_completions(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
     match shell.to_lowercase().as_str() {
         "bash" => {
-            println!(r#"# password-generator bash completion
+            println!(
+                r#"# password-generator bash completion
 _password_generator_completions() {{
     local cur="${{COMP_WORDS[COMP_CWORD]}}"
     local prev="${{COMP_WORDS[COMP_CWORD-1]}}"
 
     # Options
-    local opts="-v --version -u --user -i --interactive --add-user --bump-version --list --generate-completions -h --help"
+    local opts="-v --version -u --user -i --interactive -p --print --no-clipboard --add-user --delete-user --delete-domain --bump-version --list --skip-state --reset-pin --check-pin --generate-completions -h --help"
 
     case "$prev" in
-        -v|--version|-u|--user|--add-user)
+        -v|--version|-u|--user|--add-user|--delete-user)
             return 0
             ;;
         --generate-completions)
@@ -970,10 +1077,12 @@ _password_generator_completions() {{
     fi
 }}
 complete -F _password_generator_completions password-generator
-"#);
+"#
+            );
         }
         "zsh" => {
-            println!(r#"# password-generator zsh completion
+            println!(
+                r#"# password-generator zsh completion
 _password_generator() {{
     _arguments \
         '-v[Use specific version]:version:' \
@@ -982,19 +1091,29 @@ _password_generator() {{
         '--user[Use specific username]:username:' \
         '-i[Interactive domain selection]' \
         '--interactive[Interactive domain selection]' \
+        '-p[Print password to stdout]' \
+        '--print[Print password to stdout]' \
+        '--no-clipboard[Do not copy to clipboard]' \
         '--add-user[Add username to domain]:username:' \
+        '--delete-user[Delete username from domain]:username:' \
+        '--delete-domain[Delete domain and all usernames]' \
         '--bump-version[Increment version for domain]' \
         '--list[List all domains and usernames]' \
+        '--skip-state[Skip state unlock]' \
+        '--reset-pin[Reset PIN verification]' \
+        '--check-pin[Verify PIN from stdin]' \
         '--generate-completions[Generate shell completions]:shell:(bash zsh fish)' \
         '-h[Show help]' \
         '--help[Show help]' \
         '1:domain:'
 }}
 compdef _password_generator password-generator
-"#);
+"#
+            );
         }
         "fish" => {
-            println!(r#"# password-generator fish completion
+            println!(
+                r#"# password-generator fish completion
 # Disable file completion
 complete -c password-generator -f
 
@@ -1002,12 +1121,20 @@ complete -c password-generator -f
 complete -c password-generator -s v -l version -d 'Use specific version' -x
 complete -c password-generator -s u -l user -d 'Use specific username' -x
 complete -c password-generator -s i -l interactive -d 'Interactive domain selection'
+complete -c password-generator -s p -l print -d 'Print password to stdout'
+complete -c password-generator -l no-clipboard -d 'Do not copy to clipboard'
 complete -c password-generator -l add-user -d 'Add username to domain' -x
+complete -c password-generator -l delete-user -d 'Delete username from domain' -x
+complete -c password-generator -l delete-domain -d 'Delete domain and all usernames'
 complete -c password-generator -l bump-version -d 'Increment version for domain'
 complete -c password-generator -l list -d 'List all domains and usernames'
+complete -c password-generator -l skip-state -d 'Skip state unlock'
+complete -c password-generator -l reset-pin -d 'Reset PIN verification'
+complete -c password-generator -l check-pin -d 'Verify PIN from stdin'
 complete -c password-generator -l generate-completions -d 'Generate shell completions' -xa 'bash zsh fish'
 complete -c password-generator -s h -l help -d 'Show help'
-"#);
+"#
+            );
         }
         _ => {
             return Err(format!("Unknown shell: {}. Supported: bash, zsh, fish", shell).into());
@@ -1036,7 +1163,10 @@ fn select_username(
             eprintln!("  [{}] {}", i + 1, u);
         }
         if usernames.len() > MAX_DISPLAY {
-            eprintln!("  ... +{} more (Tab to complete)", usernames.len() - MAX_DISPLAY);
+            eprintln!(
+                "  ... +{} more (Tab to complete)",
+                usernames.len() - MAX_DISPLAY
+            );
         }
     }
     eprintln!("  [d] domain-only mode (or press Enter with empty input)");
@@ -1072,7 +1202,10 @@ fn select_username(
     }
 
     // Exact match (case-insensitive)
-    if let Some(matched) = usernames.iter().find(|u| u.to_lowercase() == input.to_lowercase()) {
+    if let Some(matched) = usernames
+        .iter()
+        .find(|u| u.to_lowercase() == input.to_lowercase())
+    {
         return Ok(matched.clone());
     }
 
@@ -1222,8 +1355,38 @@ fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>>
 
 #[cfg(target_os = "windows")]
 fn read_password_windows() -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
+    use std::os::windows::io::AsRawHandle;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+    }
+
+    const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
+    let stdin = io::stdin();
+    let handle = stdin.as_raw_handle() as *mut std::ffi::c_void;
+
+    // Get current console mode
+    let mut mode: u32 = 0;
+    let got_mode = unsafe { GetConsoleMode(handle, &mut mode) };
+
+    // Disable echo if we successfully got the mode
+    if got_mode != 0 {
+        unsafe { SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT) };
+    }
+
+    // Read password
     let mut password = Zeroizing::new(String::new());
-    io::stdin().read_line(&mut password)?;
+    let result = io::stdin().read_line(&mut password);
+
+    // Restore original mode
+    if got_mode != 0 {
+        unsafe { SetConsoleMode(handle, mode) };
+    }
+
+    result?;
 
     if password.ends_with('\n') {
         password.pop();
@@ -1450,7 +1613,10 @@ mod tests {
         assert_eq!(hex_decode("00").unwrap(), vec![0u8]);
         assert_eq!(hex_decode("ff").unwrap(), vec![255u8]);
         assert_eq!(hex_decode("0102").unwrap(), vec![1u8, 2u8]);
-        assert_eq!(hex_decode("7a3f8b2c").unwrap(), vec![0x7a, 0x3f, 0x8b, 0x2c]);
+        assert_eq!(
+            hex_decode("7a3f8b2c").unwrap(),
+            vec![0x7a, 0x3f, 0x8b, 0x2c]
+        );
     }
 
     #[test]
@@ -1460,9 +1626,24 @@ mod tests {
         assert_eq!(normalize_domain("https://github.com"), "github.com");
         assert_eq!(normalize_domain("http://github.com"), "github.com");
         assert_eq!(normalize_domain("www.github.com"), "github.com");
-        assert_eq!(normalize_domain("https://www.github.com/path"), "github.com");
+        assert_eq!(
+            normalize_domain("https://www.github.com/path"),
+            "github.com"
+        );
         assert_eq!(normalize_domain("  github.com  "), "github.com");
         assert_eq!(normalize_domain("github.com/"), "github.com");
+        // Query strings and fragments
+        assert_eq!(normalize_domain("example.com?foo=bar"), "example.com");
+        assert_eq!(normalize_domain("example.com#section"), "example.com");
+        assert_eq!(
+            normalize_domain("example.com/path?query=1#hash"),
+            "example.com"
+        );
+        // Port numbers
+        assert_eq!(normalize_domain("localhost:3000"), "localhost");
+        assert_eq!(normalize_domain("localhost:8080/path"), "localhost");
+        assert_eq!(normalize_domain("https://example.com:443"), "example.com");
+        assert_eq!(normalize_domain("http://localhost:3000/api"), "localhost");
     }
 
     #[test]
@@ -1604,5 +1785,21 @@ mod tests {
         // Both should be valid 2-bit values
         assert!(checksum1 <= 3);
         assert!(checksum2 <= 3);
+    }
+
+    #[test]
+    fn test_all_chars_consistency() {
+        // Verify ALL_CHARS equals LOWERCASE + UPPERCASE + DIGITS + SYMBOLS
+        let mut expected = Vec::new();
+        expected.extend_from_slice(LOWERCASE);
+        expected.extend_from_slice(UPPERCASE);
+        expected.extend_from_slice(DIGITS);
+        expected.extend_from_slice(SYMBOLS);
+
+        assert_eq!(
+            ALL_CHARS,
+            &expected[..],
+            "ALL_CHARS must equal LOWERCASE + UPPERCASE + DIGITS + SYMBOLS"
+        );
     }
 }

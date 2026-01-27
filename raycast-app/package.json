@@ -8,6 +8,16 @@
   "license": "MIT",
   "categories": ["Security", "Productivity"],
   "keywords": ["password", "yubikey", "security", "generator", "deterministic"],
+  "preferences": [
+    {
+      "name": "binaryPath",
+      "title": "Binary Path",
+      "description": "Path to password-generator binary (leave empty to use PATH)",
+      "type": "textfield",
+      "required": false,
+      "default": "password-generator"
+    }
+  ],
   "commands": [
     {
       "name": "index",

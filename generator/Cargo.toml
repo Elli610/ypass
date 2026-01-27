@@ -8,7 +8,7 @@ rust-version = "1.85"
 # Argon2id for secure key derivation - industry standard as of 2026
 argon2 = { version = "0.5", default-features = false, features = ["std"] }
 # Secure memory wiping to prevent password leaks
-zeroize = { version = "1.8", features = ["derive"] }
+zeroize = "1.8"
 # ChaCha20-Poly1305 authenticated encryption for state file
 chacha20poly1305 = "0.10.1"
 # JSON serialization for state file

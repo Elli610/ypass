@@ -96,7 +96,8 @@ const YKPERS_INSTALL_CMD = "brew install ykpers";
 function generateSetupMarkdown(status: DependencyStatus): string {
   const ypassStatus = status.ypassInstalled ? "Installed" : "Missing";
   const ykpersStatus = status.ykpersInstalled ? "Installed" : "Missing";
-  const missingCount = (status.ypassInstalled ? 0 : 1) + (status.ykpersInstalled ? 0 : 1);
+  const missingCount =
+    (status.ypassInstalled ? 0 : 1) + (status.ykpersInstalled ? 0 : 1);
 
   let markdown = `# Setup Required
 

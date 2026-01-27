@@ -21,5 +21,5 @@ export const MACOS_PATH = [
 
 export function getPasswordGeneratorPath(): string {
   const { binaryPath } = getPreferenceValues<Preferences>();
-  return binaryPath || "password-generator";
+  return binaryPath || "ypass";
 }

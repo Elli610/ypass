@@ -14,6 +14,7 @@ import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
 interface Arguments {
   domain: string;
   username?: string;
+  version?: string;
 }
 
 type Stage =
@@ -27,10 +28,16 @@ type Stage =
 export default function QuickGenerate(
   props: LaunchProps<{ arguments: Arguments }>,
 ) {
-  const { domain, username } = props.arguments;
+  const { domain, username, version } = props.arguments;
   const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
 
-  const [stage, setStage] = useState<Stage>("starting");
+  // If version is provided, we can use --skip-state for single-touch mode
+  const useSkipState = Boolean(version);
+  const parsedVersion = version ? parseInt(version, 10) || 1 : 1;
+
+  const [stage, setStage] = useState<Stage>(
+    useSkipState ? "password-touch" : "starting",
+  );
   const [error, setError] = useState<string>("");
   const [pinError, setPinError] = useState<boolean>(false);
 
@@ -75,7 +82,14 @@ export default function QuickGenerate(
   useEffect(() => {
     if (processRef.current) return;
 
-    const args = username ? [domain, "-u", username] : [domain];
+    // Build args based on whether we can use --skip-state
+    const args = [domain];
+    if (useSkipState) {
+      args.push("--skip-state", "-v", String(parsedVersion));
+    }
+    if (username) {
+      args.push("-u", username);
+    }
 
     const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
       env: { ...process.env, PATH: MACOS_PATH },
@@ -130,7 +144,7 @@ export default function QuickGenerate(
     return () => {
       // Don't kill on cleanup - let the process complete
     };
-  }, [domain, username, PASSWORD_GENERATOR_PATH]);
+  }, [domain, username, PASSWORD_GENERATOR_PATH, useSkipState, parsedVersion]);
 
   const subtitle = username ? `${domain} / ${username}` : domain;
 
@@ -139,7 +153,7 @@ export default function QuickGenerate(
       <Detail
         markdown={`# Starting...
 
-Launching password-generator for \`${subtitle}\`...`}
+Launching ypass for \`${subtitle}\`...`}
       />
     );
   }
@@ -219,7 +233,7 @@ It will be cleared in 20 seconds.`}
 ${error}
 \`\`\`
 
-**Command:** \`${PASSWORD_GENERATOR_PATH} ${domain}${username ? ` -u ${username}` : ""}\`
+**Command:** \`${PASSWORD_GENERATOR_PATH} ${domain}${useSkipState ? ` --skip-state -v ${parsedVersion}` : ""}${username ? ` -u ${username}` : ""}\`
 
 **Troubleshooting:**
 - Make sure \`ykchalresp\` is installed: \`brew install ykpers\`

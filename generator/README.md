@@ -20,7 +20,7 @@ Same inputs always produce the same password. No password storage needed.
 - **Multi-account support**: Different passwords for different usernames on the same domain
 - **Password rotation**: Bump version to generate new passwords without changing PIN
 - **PIN verification**: Detects typos before generating wrong passwords (no YubiKey required)
-- **Encrypted state file**: Usernames and versions stored in `~/.config/dpg/state.enc`, encrypted with YubiKey
+- **Encrypted state file**: Usernames and versions stored in `~/.config/ypass/state.enc`, encrypted with YubiKey
 - **Interactive mode**: Run without arguments to search and select from stored domains
 - **Shell completions**: Tab completion for bash, zsh, and fish
 
@@ -52,6 +52,7 @@ ykman otp chalresp --touch 1
 **CRITICAL: Save the hex key immediately.** You cannot extract it later.
 
 The secret is the hex string shown:
+(20 bytes, 40 hex chars)
 ```
 1baaf06deb405c5e3a2cd4978f0b0c5431a470a6
 ```
@@ -75,7 +76,7 @@ Slot 1: programmed
 cargo build --release
 ```
 
-Binary will be at `target/release/password-generator`.
+Binary will be at `target/release/ypass`.
 
 ## Install
 
@@ -83,12 +84,12 @@ Install the CLI to your local bin directory:
 
 ```bash
 # macOS / Linux
-cp target/release/password-generator ~/.local/bin/
+cp target/release/ypass ~/.local/bin/
 # or system-wide
-sudo cp target/release/password-generator /usr/local/bin/
+sudo cp target/release/ypass /usr/local/bin/
 
 # Windows (PowerShell as Admin)
-copy target\release\password-generator.exe C:\Windows\System32\
+copy target\release\ypass.exe C:\Windows\System32\
 ```
 
 Ensure `~/.local/bin` is in your PATH:
@@ -103,7 +104,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Basic Usage
 
 ```bash
-password-generator github.com
+ypass github.com
 ```
 
 1. Touch YubiKey to unlock state file
@@ -115,7 +116,7 @@ password-generator github.com
 ### Command Line Options
 
 ```
-password-generator [domain] [options]
+ypass [domain] [options]
 
 Options:
   -v, --version <n>       Use specific version (default: latest from state)
@@ -141,7 +142,7 @@ Options:
 Run without arguments to enter interactive mode:
 
 ```bash
-password-generator
+ypass
 # Output:
 # Domain: <tab completion available>
 #
@@ -159,11 +160,11 @@ For sites where you have multiple accounts (e.g., Gmail):
 
 ```bash
 # Add usernames to a domain
-password-generator gmail.com --add-user personal@gmail.com
-password-generator gmail.com --add-user work@gmail.com
+ypass gmail.com --add-user personal@gmail.com
+ypass gmail.com --add-user work@gmail.com
 
 # Generate password - shows interactive selection
-password-generator gmail.com
+ypass gmail.com
 # Output:
 # Usernames for 'gmail.com':
 #   [1] personal@gmail.com
@@ -173,7 +174,7 @@ password-generator gmail.com
 # Username: <tab completion available>
 
 # Or specify username directly
-password-generator gmail.com -u personal@gmail.com
+ypass gmail.com -u personal@gmail.com
 ```
 
 ### Password Rotation
@@ -182,13 +183,13 @@ When a site is breached and you need a new password:
 
 ```bash
 # Bump version for a specific username
-password-generator github.com --bump-version -u myuser
+ypass github.com --bump-version -u myuser
 
 # Bump version for domain-only mode
-password-generator github.com --bump-version
+ypass github.com --bump-version
 
 # Or use a specific version
-password-generator github.com -u myuser -v 3
+ypass github.com -u myuser -v 3
 ```
 
 > Note: Versions are tracked per-username. Latest version is used by default.
@@ -199,10 +200,10 @@ Remove usernames or entire domains from the state file:
 
 ```bash
 # Delete a specific username from a domain
-password-generator github.com --delete-user olduser
+ypass github.com --delete-user olduser
 
 # Delete an entire domain and all its usernames
-password-generator github.com --delete-domain
+ypass github.com --delete-domain
 ```
 
 Both commands require YubiKey touch to unlock the state file.
@@ -210,7 +211,7 @@ Both commands require YubiKey touch to unlock the state file.
 ### List All Entries
 
 ```bash
-password-generator --list
+ypass --list
 # Output:
 # github.com
 #   - myuser (v2)
@@ -224,16 +225,16 @@ password-generator --list
 All these produce the same password:
 
 ```bash
-password-generator github.com
-password-generator GitHub.com
-password-generator https://github.com
-password-generator https://www.github.com/settings
-password-generator www.github.com
+ypass github.com
+ypass GitHub.com
+ypass https://github.com
+ypass https://www.github.com/settings
+ypass www.github.com
 ```
 
 ### PIN Verification
 
-On first use, a 2-bit checksum of your PIN is saved to `~/.config/dpg/pin.check`. On subsequent uses, the CLI checks your PIN before generating the password:
+On first use, a 2-bit checksum of your PIN is saved to `~/.config/ypass/pin.check`. On subsequent uses, the CLI checks your PIN before generating the password:
 
 - **Correct PIN**: Proceeds to generate password
 - **Wrong PIN**: Prompts to try again (75% of typos caught)
@@ -242,11 +243,11 @@ This prevents most wrong passwords due to typos.
 
 ```bash
 # Verify PIN without generating password (for scripts/integrations)
-echo "mypin" | password-generator --check-pin
+echo "mypin" | ypass --check-pin
 # Exit code: 0 = correct, 1 = wrong
 
 # If you need to change your PIN
-password-generator --reset-pin
+ypass --reset-pin
 # Then generate a password with your new PIN - it will be saved automatically
 ```
 
@@ -262,21 +263,21 @@ By default, the password is only copied to clipboard (not printed to stdout) for
 
 ```bash
 # Default: clipboard only
-password-generator github.com
+ypass github.com
 
 # Print to stdout (and clipboard)
-password-generator github.com -p
+ypass github.com -p
 
 # Print to stdout only (no clipboard) - useful for piping
-password-generator github.com --no-clipboard -p
+ypass github.com --no-clipboard -p
 
 # Pipe to another program
-password-generator github.com --no-clipboard -p | some-other-tool
+ypass github.com --no-clipboard -p | some-other-tool
 ```
 
 ## State File
 
-Usernames and versions are stored encrypted at `~/.config/dpg/state.enc`.
+Usernames and versions are stored encrypted at `~/.config/ypass/state.enc`.
 
 - Encrypted with ChaCha20-Poly1305
 - Key derived from YubiKey HMAC response (requires YubiKey to decrypt)
@@ -297,17 +298,12 @@ The CLI automatically upgrades old state files on first use. If you try to use a
 If you lose your YubiKey, program a new one with the saved secret:
 
 ```bash
-ykman otp chalresp --touch 1 YOUR_HEX_SECRET_HERE
-```
-
-Example:
-```bash
-ykman otp chalresp --touch 1 1baaf06deb405c5e3a2cd4978f0b0c5431a470a6
+ykman otp chalresp --touch 1 YOUR_HEX_40_CHARS_SECRET_HERE
 ```
 
 This will generate identical passwords as your original YubiKey.
 
-**Note**: You also need to backup your state file (`~/.config/dpg/state.enc`) to preserve username and version information. Without it, you'll need to remember which usernames and versions you used.
+**Note**: You also need to backup your state file (`~/.config/ypass/state.enc`) to preserve username and version information. Without it, you'll need to remember which usernames and versions you used.
 
 ## Security Notes
 
@@ -343,7 +339,7 @@ Enable Tab completion for domains and options.
 
 ```bash
 # Add to ~/.bashrc
-password-generator --generate-completions bash >> ~/.bashrc
+ypass --generate-completions bash >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -351,19 +347,12 @@ source ~/.bashrc
 
 ```bash
 # Add to ~/.zshrc
-password-generator --generate-completions zsh >> ~/.zshrc
+ypass --generate-completions zsh >> ~/.zshrc
 source ~/.zshrc
 ```
 
 ### Fish
 
 ```bash
-password-generator --generate-completions fish > ~/.config/fish/completions/password-generator.fish
+ypass --generate-completions fish > ~/.config/fish/completions/ypass.fish
 ```
-
-## Backward Compatibility
-
-If you were using an earlier version without username/version support:
-- Domain-only mode still works (just don't add usernames)
-- Version defaults to 1
-- Existing passwords remain unchanged when using empty username and version 1

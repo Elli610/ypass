@@ -8,7 +8,7 @@ __   ______
 
 # Password Manager using Yubikey as storage
 
-A secure password generator that combines YubiKey hardware security with a memorized pin. Same inputs always produce the same password - no software password storage needed.
+A secure password manager that combines YubiKey hardware security with a memorized pin. Same inputs always produce the same password - no software password storage needed.
 
 ## How It Works
 
@@ -23,13 +23,13 @@ Domain + Username + Version ──┘
 Your passwords are derived from:
 - **YubiKey secret** - Hardware-bound, requires physical touch
 - **PIN** - Memorized, never stored
-- **Domain** - Normalized (github.com, GitHub.com, https://github.com/path all become `github`)
+- **Domain** - Normalized (github.com, GitHub.com, https://github.com/path all become `github`) (subdomains are preserved, except `www.`)
 - **Username** - Optional, for multiple accounts per site
 - **Version** - For password rotation when needed
 
 ## Components
 
-### [generator/](./generator/) - CLI Tool
+### [cli/](./cli/) - CLI Tool
 
 Rust command-line application for generating passwords.
 
@@ -71,7 +71,7 @@ ykman otp chalresp --generate --touch 1
 ### 2. Install CLI
 
 ```bash
-cd generator
+cd cli
 cargo build --release
 cp target/release/ypass ~/.local/bin/
 ```

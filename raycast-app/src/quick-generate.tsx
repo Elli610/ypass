@@ -9,7 +9,13 @@ import {
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
+import {
+  MACOS_PATH,
+  getPasswordGeneratorPath,
+  checkCLIInstalled,
+  CLICheckingView,
+  CLINotFoundView,
+} from "./utils";
 
 interface Arguments {
   domain: string;
@@ -18,6 +24,8 @@ interface Arguments {
 }
 
 type Stage =
+  | "checking-cli"
+  | "cli-not-found"
   | "starting"
   | "unlock-touch"
   | "password-touch"
@@ -35,9 +43,7 @@ export default function QuickGenerate(
   const useSkipState = Boolean(version);
   const parsedVersion = version ? parseInt(version, 10) || 1 : 1;
 
-  const [stage, setStage] = useState<Stage>(
-    useSkipState ? "password-touch" : "starting",
-  );
+  const [stage, setStage] = useState<Stage>("checking-cli");
   const [error, setError] = useState<string>("");
   const [pinError, setPinError] = useState<boolean>(false);
 
@@ -81,6 +87,15 @@ export default function QuickGenerate(
   // Start process on mount
   useEffect(() => {
     if (processRef.current) return;
+
+    // Check if CLI is installed first
+    if (!checkCLIInstalled()) {
+      setStage("cli-not-found");
+      return;
+    }
+
+    // Set initial stage based on mode
+    setStage(useSkipState ? "password-touch" : "starting");
 
     // Build args based on whether we can use --skip-state
     const args = [domain];
@@ -147,6 +162,14 @@ export default function QuickGenerate(
   }, [domain, username, PASSWORD_GENERATOR_PATH, useSkipState, parsedVersion]);
 
   const subtitle = username ? `${domain} / ${username}` : domain;
+
+  if (stage === "checking-cli") {
+    return <CLICheckingView />;
+  }
+
+  if (stage === "cli-not-found") {
+    return <CLINotFoundView />;
+  }
 
   if (stage === "starting") {
     return (

@@ -10,9 +10,17 @@ import {
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
+import {
+  MACOS_PATH,
+  getPasswordGeneratorPath,
+  checkCLIInstalled,
+  CLICheckingView,
+  CLINotFoundView,
+} from "./utils";
 
 type Stage =
+  | "checking-cli"
+  | "cli-not-found"
   | "loading-domains"
   | "select-domain"
   | "unlock-touch"
@@ -78,7 +86,7 @@ function parseDomains(output: string): DomainEntry[] {
 export default function Command() {
   const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
 
-  const [stage, setStage] = useState<Stage>("loading-domains");
+  const [stage, setStage] = useState<Stage>("checking-cli");
   const [domains, setDomains] = useState<DomainEntry[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>("");
   const [selectedUsername, setSelectedUsername] = useState<string>("");
@@ -93,9 +101,13 @@ export default function Command() {
   const processRef = useRef<ChildProcess | null>(null);
   const outputBufferRef = useRef<string>("");
 
-  // Load domains from CLI state on mount
+  // Check CLI and load domains on mount
   useEffect(() => {
-    loadDomainsFromState();
+    if (checkCLIInstalled()) {
+      loadDomainsFromState();
+    } else {
+      setStage("cli-not-found");
+    }
   }, []);
 
   // Cleanup process on unmount
@@ -505,6 +517,24 @@ export default function Command() {
     },
     [sendInput, PASSWORD_GENERATOR_PATH],
   );
+
+  // Stage: Checking CLI
+  if (stage === "checking-cli") {
+    return <CLICheckingView />;
+  }
+
+  // Stage: CLI not found
+  if (stage === "cli-not-found") {
+    return (
+      <CLINotFoundView
+        onRetry={() => {
+          if (checkCLIInstalled()) {
+            loadDomainsFromState();
+          }
+        }}
+      />
+    );
+  }
 
   // Stage: Loading domains (initial unlock)
   if (stage === "loading-domains") {

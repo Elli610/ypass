@@ -6,9 +6,9 @@ __   ______
   |_| |_|   \__,_|___/___/
 ```
 
-# Deterministic Password Generator
+# Password Manager using Yubikey as storage
 
-A secure password generator that combines YubiKey hardware security with a memorized pin. Same inputs always produce the same password - no password storage needed.
+A secure password generator that combines YubiKey hardware security with a memorized pin. Same inputs always produce the same password - no software password storage needed.
 
 ## How It Works
 

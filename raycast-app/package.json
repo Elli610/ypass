@@ -29,7 +29,7 @@
   ],
   "commands": [
     {
-      "name": "index",
+      "name": "get-password",
       "title": "Get Password",
       "subtitle": "YubiKey",
       "description": "Get a password using your YubiKey",

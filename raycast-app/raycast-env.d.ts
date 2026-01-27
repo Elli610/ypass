@@ -16,15 +16,15 @@ type ExtensionPreferences = {
 declare type Preferences = ExtensionPreferences
 
 declare namespace Preferences {
-  /** Preferences accessible in the `index` command */
-  export type Index = ExtensionPreferences & {}
+  /** Preferences accessible in the `get-password` command */
+  export type GetPassword = ExtensionPreferences & {}
   /** Preferences accessible in the `quick-generate` command */
   export type QuickGenerate = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
-  /** Arguments passed to the `index` command */
-  export type Index = {}
+  /** Arguments passed to the `get-password` command */
+  export type GetPassword = {}
   /** Arguments passed to the `quick-generate` command */
   export type QuickGenerate = {
   /** Domain */

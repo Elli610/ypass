@@ -46,16 +46,48 @@ const APP_SALT: [u8; 32] = [
 const STATE_KEY_CHALLENGE: &str = "__dpg_state_key__";
 
 /// Password character sets
-const LOWERCASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
-const UPPERCASE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const DIGITS: &[u8] = b"0123456789";
-const SYMBOLS: &[u8] = b"!@#$%^&*()-_=+[]{}|;:,.<>?";
+const LOWERCASE: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+const UPPERCASE: &[u8; 26] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const DIGITS: &[u8; 10] = b"0123456789";
+const SYMBOLS: &[u8; 26] = b"!@#$%^&*()-_=+[]{}|;:,.<>?";
 
-/// All characters combined for password generation
-/// NOTE: This must be kept in sync with LOWERCASE + UPPERCASE + DIGITS + SYMBOLS
-/// (Rust doesn't support const array concatenation, see test_all_chars_consistency)
-const ALL_CHARS: &[u8] =
-    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?";
+/// All characters combined for password generation (computed at compile time)
+const ALL_CHARS_LEN: usize = LOWERCASE.len() + UPPERCASE.len() + DIGITS.len() + SYMBOLS.len();
+const ALL_CHARS_ARRAY: [u8; ALL_CHARS_LEN] = {
+    let mut result = [0u8; ALL_CHARS_LEN];
+    let mut i = 0;
+
+    let mut j = 0;
+    while j < LOWERCASE.len() {
+        result[i] = LOWERCASE[j];
+        i += 1;
+        j += 1;
+    }
+
+    j = 0;
+    while j < UPPERCASE.len() {
+        result[i] = UPPERCASE[j];
+        i += 1;
+        j += 1;
+    }
+
+    j = 0;
+    while j < DIGITS.len() {
+        result[i] = DIGITS[j];
+        i += 1;
+        j += 1;
+    }
+
+    j = 0;
+    while j < SYMBOLS.len() {
+        result[i] = SYMBOLS[j];
+        i += 1;
+        j += 1;
+    }
+
+    result
+};
+const ALL_CHARS: &[u8] = &ALL_CHARS_ARRAY;
 
 const PASSWORD_LENGTH: usize = 32;
 const CLIPBOARD_CLEAR_SECONDS: u64 = 20;
@@ -1788,18 +1820,12 @@ mod tests {
     }
 
     #[test]
-    fn test_all_chars_consistency() {
-        // Verify ALL_CHARS equals LOWERCASE + UPPERCASE + DIGITS + SYMBOLS
-        let mut expected = Vec::new();
-        expected.extend_from_slice(LOWERCASE);
-        expected.extend_from_slice(UPPERCASE);
-        expected.extend_from_slice(DIGITS);
-        expected.extend_from_slice(SYMBOLS);
-
+    fn test_all_chars_length() {
+        // Verify ALL_CHARS has the expected length (26 + 26 + 10 + 26 = 88)
+        assert_eq!(ALL_CHARS.len(), 88);
         assert_eq!(
-            ALL_CHARS,
-            &expected[..],
-            "ALL_CHARS must equal LOWERCASE + UPPERCASE + DIGITS + SYMBOLS"
+            ALL_CHARS.len(),
+            LOWERCASE.len() + UPPERCASE.len() + DIGITS.len() + SYMBOLS.len()
         );
     }
 }

@@ -6,8 +6,17 @@
   "icon": "icon.png",
   "author": "elli",
   "license": "MIT",
-  "categories": ["Security", "Productivity"],
-  "keywords": ["password", "yubikey", "security", "generator", "deterministic"],
+  "categories": [
+    "Security",
+    "Productivity"
+  ],
+  "keywords": [
+    "password",
+    "yubikey",
+    "security",
+    "generator",
+    "deterministic"
+  ],
   "preferences": [
     {
       "name": "binaryPath",
@@ -21,9 +30,9 @@
   "commands": [
     {
       "name": "index",
-      "title": "Generate Password",
+      "title": "Get Password",
       "subtitle": "YubiKey",
-      "description": "Generate a password using your YubiKey",
+      "description": "Get a password using your YubiKey",
       "mode": "view"
     },
     {

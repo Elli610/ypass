@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: generator
+        working-directory: ypass
     steps:
       - uses: actions/checkout@v4
       - name: Check formatting
@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: generator
+        working-directory: ypass
     steps:
       - uses: actions/checkout@v4
       - name: Build
@@ -68,7 +68,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
       run:
-        working-directory: generator
+        working-directory: ypass
     steps:
       - uses: actions/checkout@v4
       - name: Get local version

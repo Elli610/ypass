@@ -552,15 +552,28 @@ fn normalize_domain(input: &str) -> String {
 
 // === State Management ===
 
-fn get_state_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+/// Get the ypass config directory, respecting XDG_CONFIG_HOME on Linux/macOS
+fn get_config_dir() -> PathBuf {
+    // On Windows, use USERPROFILE
+    if cfg!(target_os = "windows") {
+        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+        return PathBuf::from(home).join(".config").join("ypass");
+    }
 
-    PathBuf::from(home)
-        .join(".config")
-        .join("ypass")
-        .join("state.enc")
+    // On Linux/macOS, respect XDG_CONFIG_HOME if set
+    if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg_config.is_empty() {
+            return PathBuf::from(xdg_config).join("ypass");
+        }
+    }
+
+    // Fall back to ~/.config/ypass
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("ypass")
+}
+
+fn get_state_path() -> PathBuf {
+    get_config_dir().join("state.enc")
 }
 
 fn derive_state_key(
@@ -715,14 +728,7 @@ fn list_all_entries(state: &State) {
 
 /// Get path to PIN checksum file
 fn get_pin_check_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-
-    PathBuf::from(home)
-        .join(".config")
-        .join("ypass")
-        .join("pin.check")
+    get_config_dir().join("pin.check")
 }
 
 /// Compute 2-bit checksum of PIN using Argon2id

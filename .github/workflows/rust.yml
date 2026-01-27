@@ -71,43 +71,14 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@v4
-      - name: Get local version
-        id: local
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" >> $GITHUB_OUTPUT
-      - name: Check if version exists on crates.io
-        id: check
-        run: |
-          CRATE_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          LOCAL_VERSION="${{ steps.local.outputs.version }}"
-          echo "Checking if ${CRATE_NAME}@${LOCAL_VERSION} exists on crates.io..."
-
-          # Fetch versions from crates.io API
-          RESPONSE=$(curl -sf "https://crates.io/api/v1/crates/${CRATE_NAME}/versions" 2>&1) || {
-            # Crate doesn't exist yet (404) or API error - check which one
-            if curl -sf "https://crates.io/api/v1/crates/${CRATE_NAME}" > /dev/null 2>&1; then
-              echo "API error fetching versions, skipping publish for safety"
-              echo "should_publish=false" >> $GITHUB_OUTPUT
-              exit 0
-            else
-              echo "Crate does not exist on crates.io yet, will publish"
-              echo "should_publish=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          }
-
-          # Check if our version exists in the response
-          if echo "$RESPONSE" | jq -e ".versions[] | select(.num == \"${LOCAL_VERSION}\")" > /dev/null 2>&1; then
-            echo "Version ${LOCAL_VERSION} already exists on crates.io"
-            echo "should_publish=false" >> $GITHUB_OUTPUT
-          else
-            echo "Version ${LOCAL_VERSION} not found on crates.io, will publish"
-            echo "should_publish=true" >> $GITHUB_OUTPUT
-          fi
-      - name: Skip publish (version exists)
-        if: steps.check.outputs.should_publish == 'false'
-        run: echo "Version ${{ steps.local.outputs.version }} already exists on crates.io. Nothing to publish."
       - name: Publish to crates.io
-        if: steps.check.outputs.should_publish == 'true'
-        run: cargo publish
+        run: |
+          OUTPUT=$(cargo publish 2>&1) && exit 0
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -q "already exists"; then
+            echo "Version already exists on crates.io. Nothing to publish."
+            exit 0
+          fi
+          exit 1
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.RUST_CRATES_TOKEN }}

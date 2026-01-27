@@ -61,7 +61,7 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-  # Publish to crates.io (main branch only, only when version have been bumped)
+  # Publish to crates.io (main branch only, only when version has been bumped)
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -78,13 +78,33 @@ jobs:
         id: check
         run: |
           CRATE_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          if curl -s "https://crates.io/api/v1/crates/${CRATE_NAME}/versions" | jq -e ".versions[] | select(.num == \"${{ steps.local.outputs.version }}\")" > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          LOCAL_VERSION="${{ steps.local.outputs.version }}"
+          echo "Checking if ${CRATE_NAME}@${LOCAL_VERSION} exists on crates.io..."
+
+          # Fetch versions from crates.io API
+          RESPONSE=$(curl -sf "https://crates.io/api/v1/crates/${CRATE_NAME}/versions" 2>&1) || {
+            # Crate doesn't exist yet (404) or API error - check which one
+            if curl -sf "https://crates.io/api/v1/crates/${CRATE_NAME}" > /dev/null 2>&1; then
+              echo "API error fetching versions, skipping publish for safety"
+              echo "should_publish=false" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "Crate does not exist on crates.io yet, will publish"
+              echo "should_publish=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          }
+
+          # Check if our version exists in the response
+          if echo "$RESPONSE" | jq -e ".versions[] | select(.num == \"${LOCAL_VERSION}\")" > /dev/null 2>&1; then
+            echo "Version ${LOCAL_VERSION} already exists on crates.io"
+            echo "should_publish=false" >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Version ${LOCAL_VERSION} not found on crates.io, will publish"
+            echo "should_publish=true" >> $GITHUB_OUTPUT
           fi
       - name: Publish to crates.io
-        if: steps.check.outputs.exists == 'false'
-        run: cargo publish --token ${{ secrets.RUST_CRATES_TOKEN }}
+        if: steps.check.outputs.should_publish == 'true'
+        run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.RUST_CRATES_TOKEN }}

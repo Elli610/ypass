@@ -4,36 +4,18 @@ import {
   Detail,
   Form,
   LaunchProps,
-  getPreferenceValues,
   showHUD,
   popToRoot,
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
 
 interface Arguments {
   domain: string;
   username?: string;
+  version?: string;
 }
-
-interface Preferences {
-  binaryPath?: string;
-}
-
-// Comprehensive PATH for macOS
-const MACOS_PATH = [
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/opt/homebrew/sbin",
-  "/usr/local/sbin",
-  "/usr/bin",
-  "/bin",
-  "/usr/sbin",
-  "/sbin",
-  process.env.PATH,
-]
-  .filter(Boolean)
-  .join(":");
 
 type Stage =
   | "starting"
@@ -46,21 +28,18 @@ type Stage =
 export default function QuickGenerate(
   props: LaunchProps<{ arguments: Arguments }>,
 ) {
-  const { domain, username } = props.arguments;
+  const { domain, username, version } = props.arguments;
+  const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
 
-  let binaryPath = "password-generator";
-  try {
-    const prefs = getPreferenceValues<Preferences>();
-    if (prefs.binaryPath) {
-      binaryPath = prefs.binaryPath;
-    }
-  } catch {
-    // No preferences defined, use default
-  }
+  // If version is provided, we can use --skip-state for single-touch mode
+  const useSkipState = Boolean(version);
+  const parsedVersion = version ? parseInt(version, 10) || 1 : 1;
 
-  const [stage, setStage] = useState<Stage>("starting");
-  const [, setOutput] = useState<string>("");
+  const [stage, setStage] = useState<Stage>(
+    useSkipState ? "password-touch" : "starting",
+  );
   const [error, setError] = useState<string>("");
+  const [pinError, setPinError] = useState<boolean>(false);
 
   const processRef = useRef<ChildProcess | null>(null);
   const outputBufferRef = useRef<string>("");
@@ -74,20 +53,45 @@ export default function QuickGenerate(
 
   const handlePinSubmit = useCallback(
     (values: { pin: string }) => {
-      if (values.pin) {
-        sendInput(values.pin);
-      }
+      if (!values.pin) return;
+
+      setPinError(false);
+
+      // Verify PIN with --check-pin before sending
+      const checkProc = spawn(PASSWORD_GENERATOR_PATH, ["--check-pin"], {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      checkProc.stdin?.write(values.pin + "\n");
+      checkProc.stdin?.end();
+
+      checkProc.on("close", (code) => {
+        if (code === 0) {
+          // PIN correct, send to password generation process
+          sendInput(values.pin);
+        } else {
+          // PIN wrong, show error
+          setPinError(true);
+        }
+      });
     },
-    [sendInput],
+    [sendInput, PASSWORD_GENERATOR_PATH],
   );
 
   // Start process on mount
   useEffect(() => {
     if (processRef.current) return;
 
-    const args = username ? [domain, "-u", username] : [domain];
+    // Build args based on whether we can use --skip-state
+    const args = [domain];
+    if (useSkipState) {
+      args.push("--skip-state", "-v", String(parsedVersion));
+    }
+    if (username) {
+      args.push("-u", username);
+    }
 
-    const proc = spawn(binaryPath, args, {
+    const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
       env: { ...process.env, PATH: MACOS_PATH },
     });
 
@@ -96,11 +100,10 @@ export default function QuickGenerate(
     proc.stdout?.on("data", (data: Buffer) => {
       const text = data.toString();
       outputBufferRef.current += text;
-      setOutput((prev) => prev + text);
 
       if (text.includes("copied to clipboard")) {
         setStage("success");
-        showHUD("✅ Password copied to clipboard!");
+        showHUD("Password copied to clipboard!");
         setTimeout(() => popToRoot(), 1000);
       }
     });
@@ -117,7 +120,7 @@ export default function QuickGenerate(
         setStage("enter-pin");
       } else if (text.includes("copied to clipboard")) {
         setStage("success");
-        showHUD("✅ Password copied to clipboard!");
+        showHUD("Password copied to clipboard!");
         setTimeout(() => popToRoot(), 1000);
       }
     });
@@ -141,7 +144,7 @@ export default function QuickGenerate(
     return () => {
       // Don't kill on cleanup - let the process complete
     };
-  }, [domain, username, binaryPath]);
+  }, [domain, username, PASSWORD_GENERATOR_PATH, useSkipState, parsedVersion]);
 
   const subtitle = username ? `${domain} / ${username}` : domain;
 
@@ -150,7 +153,7 @@ export default function QuickGenerate(
       <Detail
         markdown={`# Starting...
 
-Launching password-generator for \`${subtitle}\`...`}
+Launching ypass for \`${subtitle}\`...`}
       />
     );
   }
@@ -158,7 +161,7 @@ Launching password-generator for \`${subtitle}\`...`}
   if (stage === "unlock-touch") {
     return (
       <Detail
-        markdown={`# 🔑 Touch YubiKey
+        markdown={`# Touch YubiKey
 
 Touch your YubiKey to unlock state...
 
@@ -172,7 +175,7 @@ Touch your YubiKey to unlock state...
   if (stage === "password-touch") {
     return (
       <Detail
-        markdown={`# 🔑 Touch YubiKey Again
+        markdown={`# Touch YubiKey Again
 
 Touch your YubiKey to generate password...
 
@@ -195,11 +198,15 @@ Touch your YubiKey to generate password...
       >
         <Form.Description title="Domain" text={domain} />
         {username && <Form.Description title="Username" text={username} />}
+        {pinError && (
+          <Form.Description title="" text="Wrong PIN. Please try again." />
+        )}
         <Form.PasswordField
           id="pin"
           title="PIN"
           placeholder="Enter your YubiKey PIN"
           autoFocus
+          error={pinError ? "Wrong PIN" : undefined}
         />
       </Form>
     );
@@ -208,7 +215,7 @@ Touch your YubiKey to generate password...
   if (stage === "success") {
     return (
       <Detail
-        markdown={`# ✅ Password Generated!
+        markdown={`# Password Generated!
 
 Password for \`${subtitle}\` has been copied to your clipboard.
 
@@ -220,13 +227,13 @@ It will be cleared in 20 seconds.`}
   if (stage === "error") {
     return (
       <Detail
-        markdown={`# ❌ Error
+        markdown={`# Error
 
 \`\`\`
 ${error}
 \`\`\`
 
-**Command:** \`${binaryPath} ${domain}${username ? ` -u ${username}` : ""}\`
+**Command:** \`${PASSWORD_GENERATOR_PATH} ${domain}${useSkipState ? ` --skip-state -v ${parsedVersion}` : ""}${username ? ` -u ${username}` : ""}\`
 
 **Troubleshooting:**
 - Make sure \`ykchalresp\` is installed: \`brew install ykpers\`

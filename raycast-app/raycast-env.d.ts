@@ -7,7 +7,10 @@
 
 /* eslint-disable @typescript-eslint/ban-types */
 
-type ExtensionPreferences = {}
+type ExtensionPreferences = {
+  /** Binary Path - Path to ypass binary (leave empty to use PATH) */
+  "binaryPath": string
+}
 
 /** Preferences accessible in all the extension's commands */
 declare type Preferences = ExtensionPreferences
@@ -27,7 +30,9 @@ declare namespace Arguments {
   /** Domain */
   "domain": string,
   /** Username (optional) */
-  "username": string
+  "username": string,
+  /** Version (optional, enables single-touch) */
+  "version": string
 }
 }
 

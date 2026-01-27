@@ -1,19 +1,38 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
-  "name": "password-generator",
+  "name": "ypass",
   "title": "Password Generator",
   "description": "Generate passwords with YubiKey",
   "icon": "icon.png",
   "author": "elli",
   "license": "MIT",
-  "categories": ["Security", "Productivity"],
-  "keywords": ["password", "yubikey", "security", "generator", "deterministic"],
+  "categories": [
+    "Security",
+    "Productivity"
+  ],
+  "keywords": [
+    "password",
+    "yubikey",
+    "security",
+    "generator",
+    "deterministic"
+  ],
+  "preferences": [
+    {
+      "name": "binaryPath",
+      "title": "Binary Path",
+      "description": "Path to ypass binary (leave empty to use PATH)",
+      "type": "textfield",
+      "required": false,
+      "default": "ypass"
+    }
+  ],
   "commands": [
     {
       "name": "index",
-      "title": "Generate Password",
+      "title": "Get Password",
       "subtitle": "YubiKey",
-      "description": "Generate a password using your YubiKey",
+      "description": "Get a password using your YubiKey",
       "mode": "view"
     },
     {
@@ -33,6 +52,12 @@
           "name": "username",
           "type": "text",
           "placeholder": "Username (optional)",
+          "required": false
+        },
+        {
+          "name": "version",
+          "type": "text",
+          "placeholder": "Version (optional, enables single-touch)",
           "required": false
         }
       ]

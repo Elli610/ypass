@@ -7,32 +7,10 @@ import {
   List,
   showHUD,
   popToRoot,
-  getPreferenceValues,
 } from "@raycast/api";
 import { spawn, ChildProcess } from "child_process";
 import { useState, useEffect, useCallback, useRef } from "react";
-
-interface Preferences {
-  binaryPath: string;
-}
-
-const { binaryPath } = getPreferenceValues<Preferences>();
-const PASSWORD_GENERATOR_PATH = binaryPath || "password-generator";
-
-// Comprehensive PATH for macOS - covers Homebrew on both Intel and Apple Silicon
-const MACOS_PATH = [
-  "/opt/homebrew/bin", // Apple Silicon Homebrew
-  "/usr/local/bin", // Intel Homebrew
-  "/opt/homebrew/sbin",
-  "/usr/local/sbin",
-  "/usr/bin",
-  "/bin",
-  "/usr/sbin",
-  "/sbin",
-  process.env.PATH,
-]
-  .filter(Boolean)
-  .join(":");
+import { MACOS_PATH, getPasswordGeneratorPath } from "./utils";
 
 type Stage =
   | "loading-domains"
@@ -98,6 +76,8 @@ function parseDomains(output: string): DomainEntry[] {
 }
 
 export default function Command() {
+  const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
+
   const [stage, setStage] = useState<Stage>("loading-domains");
   const [domains, setDomains] = useState<DomainEntry[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>("");
@@ -170,162 +150,171 @@ export default function Command() {
 
     proc.on("error", (err) => {
       setError(
-        `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
+        `Failed to start process: ${err.message}\n\nMake sure ypass is installed and the path is correct in preferences.`,
       );
       setStage("error");
     });
-  }, []);
+  }, [PASSWORD_GENERATOR_PATH]);
 
   // Delete user from CLI state (requires YubiKey touch)
-  const handleDeleteUser = useCallback((domain: string, username: string) => {
-    // Kill current process
-    if (processRef.current) {
-      processRef.current.kill();
-      processRef.current = null;
-    }
-
-    setStage("unlock-touch");
-    setOutput("");
-    outputBufferRef.current = "";
-
-    const proc = spawn(
-      PASSWORD_GENERATOR_PATH,
-      [domain, "--delete-user", username],
-      { env: { ...process.env, PATH: MACOS_PATH } },
-    );
-
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      outputBufferRef.current += text;
-
-      if (text.includes("Deleted username")) {
-        showHUD(`Deleted "${username}" from ${domain}`);
-        // Update local state and go back to username selection
-        setUsernames((prev) => prev.filter((u) => u.name !== username));
-        setDomains((prev) =>
-          prev.map((d) =>
-            d.domain === domain
-              ? {
-                  ...d,
-                  usernames: d.usernames.filter((u) => u.name !== username),
-                }
-              : d,
-          ),
-        );
-        setStage("select-username");
-      } else if (text.includes("not found")) {
-        showHUD(`Username "${username}" not found`);
-        setStage("select-username");
+  const handleDeleteUser = useCallback(
+    (domain: string, username: string) => {
+      // Kill current process
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
       }
-    });
 
-    proc.on("error", (err) => {
-      setError(`Failed to delete user: ${err.message}`);
-      setStage("error");
-    });
-  }, []);
+      setStage("unlock-touch");
+      setOutput("");
+      outputBufferRef.current = "";
+
+      const proc = spawn(
+        PASSWORD_GENERATOR_PATH,
+        [domain, "--delete-user", username],
+        { env: { ...process.env, PATH: MACOS_PATH } },
+      );
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+
+        if (text.includes("Deleted username")) {
+          showHUD(`Deleted "${username}" from ${domain}`);
+          // Update local state and go back to username selection
+          setUsernames((prev) => prev.filter((u) => u.name !== username));
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.filter((u) => u.name !== username),
+                  }
+                : d,
+            ),
+          );
+          setStage("select-username");
+        } else if (text.includes("not found")) {
+          showHUD(`Username "${username}" not found`);
+          setStage("select-username");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(`Failed to delete user: ${err.message}`);
+        setStage("error");
+      });
+    },
+    [PASSWORD_GENERATOR_PATH],
+  );
 
   // Delete domain from CLI state (requires YubiKey touch)
-  const handleDeleteDomain = useCallback((domain: string) => {
-    // Kill current process
-    if (processRef.current) {
-      processRef.current.kill();
-      processRef.current = null;
-    }
-
-    setStage("unlock-touch");
-    setOutput("");
-    outputBufferRef.current = "";
-
-    const proc = spawn(PASSWORD_GENERATOR_PATH, [domain, "--delete-domain"], {
-      env: { ...process.env, PATH: MACOS_PATH },
-    });
-
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      outputBufferRef.current += text;
-
-      if (text.includes("Deleted domain")) {
-        showHUD(`Deleted "${domain}" from state`);
-        // Update local state and go back to domain selection
-        setDomains((prev) => prev.filter((d) => d.domain !== domain));
-        setStage("select-domain");
-      } else if (text.includes("not found")) {
-        showHUD(`Domain "${domain}" not found in state`);
-        setStage("select-domain");
+  const handleDeleteDomain = useCallback(
+    (domain: string) => {
+      // Kill current process
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
       }
-    });
 
-    proc.on("error", (err) => {
-      setError(`Failed to delete domain: ${err.message}`);
-      setStage("error");
-    });
-  }, []);
+      setStage("unlock-touch");
+      setOutput("");
+      outputBufferRef.current = "";
+
+      const proc = spawn(PASSWORD_GENERATOR_PATH, [domain, "--delete-domain"], {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+
+        if (text.includes("Deleted domain")) {
+          showHUD(`Deleted "${domain}" from state`);
+          // Update local state and go back to domain selection
+          setDomains((prev) => prev.filter((d) => d.domain !== domain));
+          setStage("select-domain");
+        } else if (text.includes("not found")) {
+          showHUD(`Domain "${domain}" not found in state`);
+          setStage("select-domain");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(`Failed to delete domain: ${err.message}`);
+        setStage("error");
+      });
+    },
+    [PASSWORD_GENERATOR_PATH],
+  );
 
   // Bump version for a domain/username (requires YubiKey touch)
-  const handleBumpVersion = useCallback((domain: string, username: string) => {
-    if (processRef.current) {
-      processRef.current.kill();
-      processRef.current = null;
-    }
-
-    setStage("unlock-touch");
-    setOutput("");
-    outputBufferRef.current = "";
-
-    // Build args: domain --bump-version [-u username]
-    const args = [domain, "--bump-version"];
-    if (username) {
-      args.push("-u", username);
-    }
-
-    const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
-      env: { ...process.env, PATH: MACOS_PATH },
-    });
-
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      outputBufferRef.current += text;
-
-      // Match "Bumped version ... from X to Y"
-      const match = text.match(/from (\d+) to (\d+)/);
-      if (match) {
-        const newVersion = parseInt(match[2], 10);
-        showHUD(`Version bumped to v${newVersion}`);
-        // Update local state
-        setDomains((prev) =>
-          prev.map((d) =>
-            d.domain === domain
-              ? {
-                  ...d,
-                  usernames: d.usernames.map((u) =>
-                    u.name === username ? { ...u, version: newVersion } : u,
-                  ),
-                }
-              : d,
-          ),
-        );
-        // Update usernames list for current view
-        setUsernames((prev) =>
-          prev.map((u) =>
-            (u.isDomainOnly && username === "") ||
-            (!u.isDomainOnly && u.name === username)
-              ? { ...u, version: newVersion }
-              : u,
-          ),
-        );
-        setStage("select-username");
-      } else if (text.includes("not found")) {
-        showHUD(`Not found`);
-        setStage("select-username");
+  const handleBumpVersion = useCallback(
+    (domain: string, username: string) => {
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
       }
-    });
 
-    proc.on("error", (err) => {
-      setError(`Failed to bump version: ${err.message}`);
-      setStage("error");
-    });
-  }, []);
+      setStage("unlock-touch");
+      setOutput("");
+      outputBufferRef.current = "";
+
+      // Build args: domain --bump-version [-u username]
+      const args = [domain, "--bump-version"];
+      if (username) {
+        args.push("-u", username);
+      }
+
+      const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+
+        // Match "Bumped version ... from X to Y"
+        const match = text.match(/from (\d+) to (\d+)/);
+        if (match) {
+          const newVersion = parseInt(match[2], 10);
+          showHUD(`Version bumped to v${newVersion}`);
+          // Update local state
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.map((u) =>
+                      u.name === username ? { ...u, version: newVersion } : u,
+                    ),
+                  }
+                : d,
+            ),
+          );
+          // Update usernames list for current view
+          setUsernames((prev) =>
+            prev.map((u) =>
+              (u.isDomainOnly && username === "") ||
+              (!u.isDomainOnly && u.name === username)
+                ? { ...u, version: newVersion }
+                : u,
+            ),
+          );
+          setStage("select-username");
+        } else if (text.includes("not found")) {
+          showHUD(`Not found`);
+          setStage("select-username");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(`Failed to bump version: ${err.message}`);
+        setStage("error");
+      });
+    },
+    [PASSWORD_GENERATOR_PATH],
+  );
 
   // Go back to domain selection
   const goBackToDomains = useCallback(() => {
@@ -462,7 +451,7 @@ export default function Command() {
 
       proc.on("error", (err) => {
         setError(
-          `Failed to start process: ${err.message}\n\nMake sure password-generator is installed and the path is correct in preferences.`,
+          `Failed to start process: ${err.message}\n\nMake sure ypass is installed and the path is correct in preferences.`,
         );
         setStage("error");
       });
@@ -481,7 +470,7 @@ export default function Command() {
         }
       });
     },
-    [],
+    [PASSWORD_GENERATOR_PATH],
   );
 
   const sendInput = useCallback((input: string) => {
@@ -514,7 +503,7 @@ export default function Command() {
         }
       });
     },
-    [sendInput],
+    [sendInput, PASSWORD_GENERATOR_PATH],
   );
 
   // Stage: Loading domains (initial unlock)
@@ -676,7 +665,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                   <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}
-                    shortcut={{ modifiers: [], key: "escape" }}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
                     onAction={goBackToDomains}
                   />
                 </ActionPanel>
@@ -743,7 +732,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                   <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}
-                    shortcut={{ modifiers: [], key: "escape" }}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
                     onAction={goBackToDomains}
                   />
                 </ActionPanel>

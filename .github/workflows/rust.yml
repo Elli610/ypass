@@ -1,14 +1,35 @@
 name: Rust
+
 on:
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+
 env:
   CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  # Linting and formatting checks (fast, run first)
+  lint:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: generator
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+  # Build and test on multiple platforms
+  build:
+    needs: lint
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: generator
@@ -18,3 +39,52 @@ jobs:
         run: cargo build --verbose
       - name: Run tests
         run: cargo test --verbose
+
+  # Raycast extension checks (macOS only)
+  raycast:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: raycast-app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: raycast-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npx tsc --noEmit
+
+  # Publish to crates.io (main branch only, only when version have been bumped)
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: generator
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get local version
+        id: local
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" >> $GITHUB_OUTPUT
+      - name: Check if version exists on crates.io
+        id: check
+        run: |
+          CRATE_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          if curl -s "https://crates.io/api/v1/crates/${CRATE_NAME}/versions" | jq -e ".versions[] | select(.num == \"${{ steps.local.outputs.version }}\")" > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to crates.io
+        if: steps.check.outputs.exists == 'false'
+        run: cargo publish --token ${{ secrets.RUST_CRATES_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.RUST_CRATES_TOKEN }}

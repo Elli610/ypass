@@ -1102,7 +1102,7 @@ fn read_password_windows() -> Result<Zeroizing<String>, Box<dyn std::error::Erro
     use std::os::windows::io::AsRawHandle;
 
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
         fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
     }

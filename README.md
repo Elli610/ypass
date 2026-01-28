@@ -42,7 +42,7 @@ ypass --list              # List all stored domains
 Features:
 - Interactive mode with Tab completion
 - Encrypted state file for usernames/versions
-- 75% PIN typo detection (no YubiKey needed) (2 bits checksum)
+- ~94% PIN typo detection (no YubiKey needed) (4-bit checksum)
 - Auto-clearing clipboard (20 seconds)
 - Cross-platform (macOS, Linux _(not tested yet)_, Windows _(not tested yet)_)
 

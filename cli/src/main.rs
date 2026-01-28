@@ -598,26 +598,26 @@ mod tests {
     }
 
     #[test]
-    fn test_pin_checksum_2_bits() {
+    fn test_pin_checksum_4_bits() {
         use crate::pin::compute_pin_checksum;
         let pin = "test_pin";
 
-        // Checksum should be 2 bits (0-3)
+        // Checksum should be 4 bits (0-15)
         let checksum = compute_pin_checksum(pin).unwrap();
-        assert!(checksum <= 3);
+        assert!(checksum <= 15);
     }
 
     #[test]
     fn test_pin_checksum_different_pins() {
         use crate::pin::compute_pin_checksum;
-        // Different PINs may or may not have same checksum (2-bit = 25% collision)
+        // Different PINs may or may not have same checksum (4-bit = 6.25% collision)
         // Just verify the function works with different inputs
         let checksum1 = compute_pin_checksum("pin1").unwrap();
         let checksum2 = compute_pin_checksum("pin2").unwrap();
 
-        // Both should be valid 2-bit values
-        assert!(checksum1 <= 3);
-        assert!(checksum2 <= 3);
+        // Both should be valid 4-bit values
+        assert!(checksum1 <= 15);
+        assert!(checksum2 <= 15);
     }
 
     #[test]

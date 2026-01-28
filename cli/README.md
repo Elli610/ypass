@@ -234,10 +234,10 @@ ypass www.github.com
 
 ### PIN Verification
 
-On first use, a 2-bit checksum of your PIN is saved to `~/.config/ypass/pin.check`. On subsequent uses, the CLI checks your PIN before generating the password:
+On first use, a 4-bit checksum of your PIN is saved to `~/.config/ypass/pin.check`. On subsequent uses, the CLI checks your PIN before generating the password:
 
 - **Correct PIN**: Proceeds to generate password
-- **Wrong PIN**: Prompts to try again (75% of typos caught)
+- **Wrong PIN**: Prompts to try again (~94% of typos caught)
 
 This prevents most wrong passwords due to typos.
 
@@ -251,9 +251,9 @@ ypass --reset-pin
 # Then generate a password with your new PIN - it will be saved automatically
 ```
 
-**Security**: The 2-bit checksum is a minimal information leak:
-- Only 4 possible values (0-3)
-- 25% of all PINs match any given checksum
+**Security**: The 4-bit checksum is a minimal information leak:
+- Only 16 possible values (0-15)
+- 6.25% of all PINs match any given checksum
 - Attacker learns almost nothing useful
 - No YubiKey needed to verify (works with `--skip-state`)
 

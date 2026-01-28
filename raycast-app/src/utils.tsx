@@ -246,7 +246,7 @@ export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
             )}
             {!status.ypassInstalled && (
               <Action.CopyToClipboard
-                title="Copy YPass Command"
+                title="Copy Ypass Command"
                 icon={Icon.Terminal}
                 content={YPASS_INSTALL_CMD}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "1" }}
@@ -254,7 +254,7 @@ export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
             )}
             {!status.ykpersInstalled && (
               <Action.CopyToClipboard
-                title="Copy ykpers Command"
+                title="Copy Ykpers Command"
                 icon={Icon.Terminal}
                 content={YKPERS_INSTALL_CMD}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "2" }}
@@ -279,7 +279,7 @@ export function CLINotFoundView({ onRetry }: { onRetry?: () => void }) {
           </ActionPanel.Section>
           <ActionPanel.Section title="Links">
             <Action.OpenInBrowser
-              title="Open YPass Repository"
+              title="Open Ypass Repository"
               icon={Icon.Globe}
               url="https://github.com/elli610/ypass"
             />

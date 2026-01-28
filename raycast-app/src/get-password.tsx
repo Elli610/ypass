@@ -20,6 +20,53 @@ import {
   CLINotFoundView,
 } from "./utils";
 
+// Levenshtein distance for fuzzy string matching
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = [];
+
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1, // insertion
+          matrix[i - 1][j] + 1, // deletion
+        );
+      }
+    }
+  }
+
+  return matrix[b.length][a.length];
+}
+
+// Score a string match: lower is better
+// Priority: 1) starts with, 2) contains, 3) edit distance
+function matchScore(item: string, query: string): number {
+  const itemLower = item.toLowerCase();
+  const queryLower = query.toLowerCase();
+
+  if (itemLower === queryLower) {
+    return 0; // Exact match
+  }
+  if (itemLower.startsWith(queryLower)) {
+    return 1 + (itemLower.length - queryLower.length) * 0.01; // Starts with, prefer shorter
+  }
+  if (itemLower.includes(queryLower)) {
+    return 100 + itemLower.indexOf(queryLower); // Contains, prefer earlier position
+  }
+  // Fuzzy match using Levenshtein distance
+  return 1000 + levenshteinDistance(itemLower, queryLower);
+}
+
 type Stage =
   | "checking-cli"
   | "cli-not-found"
@@ -369,6 +416,19 @@ export default function Command() {
       setSearchText("");
       setUsernameSearch("");
 
+      // If this is a new domain, prepend it to the domains list (last added = first)
+      if (isNew) {
+        setDomains((prev) => {
+          // Don't add if already exists
+          if (
+            prev.some((d) => d.domain.toLowerCase() === domain.toLowerCase())
+          ) {
+            return prev;
+          }
+          return [{ domain, usernames: [] }, ...prev];
+        });
+      }
+
       // Build usernames list for selection
       const usernameEntries: UsernameEntry[] = [];
 
@@ -418,6 +478,49 @@ export default function Command() {
       setSelectedDomain(domain);
       if (username) {
         setSelectedUsername(username);
+
+        // If this is a new username, prepend it to the usernames list and update domains (last added = first)
+        if (isNewUsername) {
+          setUsernames((prev) => {
+            // Don't add if already exists
+            if (
+              prev.some(
+                (u) =>
+                  !u.isDomainOnly &&
+                  u.name.toLowerCase() === username.toLowerCase(),
+              )
+            ) {
+              return prev;
+            }
+            // Find domain-only entry to keep it first
+            const domainOnly = prev.find((u) => u.isDomainOnly);
+            const others = prev.filter((u) => !u.isDomainOnly);
+            const newEntry: UsernameEntry = {
+              index: String(others.length + 1),
+              name: username,
+              version: 1,
+            };
+            return domainOnly
+              ? [domainOnly, newEntry, ...others]
+              : [newEntry, ...others];
+          });
+
+          // Also update the domains state to include this new username
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.some(
+                      (u) => u.name.toLowerCase() === username.toLowerCase(),
+                    )
+                      ? d.usernames
+                      : [{ name: username, version: 1 }, ...d.usernames],
+                  }
+                : d,
+            ),
+          );
+        }
       }
       outputBufferRef.current = "";
       setOutput("");
@@ -576,12 +679,20 @@ Touch your YubiKey to unlock state and load domains...
 
   // Stage: Select Domain
   if (stage === "select-domain") {
-    const filteredDomains = domains.filter((d) =>
-      d.domain.toLowerCase().includes(searchText.toLowerCase()),
-    );
+    // Sort domains by match score and limit to 15
+    const sortedDomains =
+      searchText.length > 0
+        ? [...domains]
+            .map((d) => ({ ...d, score: matchScore(d.domain, searchText) }))
+            .sort((a, b) => a.score - b.score)
+            .slice(0, 15)
+        : domains.slice(0, 15);
+
     const showNewDomainOption =
       searchText.length > 0 &&
       !domains.some((d) => d.domain.toLowerCase() === searchText.toLowerCase());
+
+    const addNewDomainAction = () => selectDomain(searchText, [], true);
 
     return (
       <List
@@ -590,23 +701,8 @@ Touch your YubiKey to unlock state and load domains...
         onSearchTextChange={setSearchText}
         filtering={false}
       >
-        {showNewDomainOption && (
-          <List.Item
-            icon={Icon.Plus}
-            title={`Use "${searchText}"`}
-            subtitle="New domain"
-            actions={
-              <ActionPanel>
-                <Action
-                  title="Select Domain"
-                  onAction={() => selectDomain(searchText, [], true)}
-                />
-              </ActionPanel>
-            }
-          />
-        )}
         <List.Section title="Stored Domains">
-          {filteredDomains.map((entry) => (
+          {sortedDomains.map((entry) => (
             <List.Item
               key={entry.domain}
               icon={Icon.Globe}
@@ -629,6 +725,14 @@ Touch your YubiKey to unlock state and load domains...
                       selectDomain(entry.domain, entry.usernames, false)
                     }
                   />
+                  {showNewDomainOption && (
+                    <Action
+                      title={`Add "${searchText}" as New Domain`}
+                      icon={Icon.Plus}
+                      shortcut={{ modifiers: ["cmd"], key: "n" }}
+                      onAction={addNewDomainAction}
+                    />
+                  )}
                   <Action
                     title="Refresh Domains"
                     icon={Icon.ArrowClockwise}
@@ -647,6 +751,24 @@ Touch your YubiKey to unlock state and load domains...
             />
           ))}
         </List.Section>
+        {/* Add new domain option at the bottom */}
+        {showNewDomainOption && (
+          <List.Section title="Add New">
+            <List.Item
+              icon={Icon.Plus}
+              title={`Add "${searchText}"`}
+              subtitle="New domain"
+              actions={
+                <ActionPanel>
+                  <Action
+                    title="Add New Domain"
+                    onAction={addNewDomainAction}
+                  />
+                </ActionPanel>
+              }
+            />
+          </List.Section>
+        )}
         {domains.length === 0 && !showNewDomainOption && (
           <List.EmptyView
             icon={Icon.Key}
@@ -675,11 +797,18 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
 
   // Stage: Select Username (from cached data, no CLI interaction yet)
   if (stage === "select-username") {
-    const filteredUsernames = usernames.filter(
-      (u) =>
-        u.isDomainOnly ||
-        u.name.toLowerCase().includes(usernameSearch.toLowerCase()),
-    );
+    // Sort usernames by match score (domain-only always first)
+    const sortedUsernames =
+      usernameSearch.length > 0
+        ? [...usernames]
+            .filter((u) => !u.isDomainOnly) // Exclude domain-only from sorting
+            .map((u) => ({ ...u, score: matchScore(u.name, usernameSearch) }))
+            .sort((a, b) => a.score - b.score)
+            .slice(0, 15)
+        : usernames.filter((u) => !u.isDomainOnly);
+
+    // Get domain-only entry
+    const domainOnlyEntry = usernames.find((u) => u.isDomainOnly);
 
     // Show "add new" option when user types something not in the list
     const showNewUsernameOption =
@@ -690,6 +819,14 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
           u.name.toLowerCase() === usernameSearch.toLowerCase(),
       );
 
+    const addNewUsernameAction = () =>
+      startProcess(
+        selectedDomain,
+        usernameSearch,
+        1, // new usernames start at version 1
+        true, // new username always needs state unlock
+      );
+
     return (
       <List
         searchBarPlaceholder="Select username, type new, or leave empty..."
@@ -697,83 +834,44 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
         onSearchTextChange={setUsernameSearch}
         filtering={false}
       >
-        <List.Section title={`Username for ${selectedDomain}`}>
-          {/* New username option when typing */}
-          {showNewUsernameOption && (
-            <List.Item
-              icon={Icon.Plus}
-              title={`Use "${usernameSearch}"`}
-              subtitle="New username (requires state unlock)"
-              actions={
-                <ActionPanel>
-                  <Action
-                    title="Use This Username"
-                    onAction={() =>
-                      startProcess(
-                        selectedDomain,
-                        usernameSearch,
-                        1, // new usernames start at version 1
-                        true, // new username always needs state unlock
-                      )
-                    }
-                  />
-                  <Action
-                    title="Back to Domains"
-                    icon={Icon.ArrowLeft}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
-                    onAction={goBackToDomains}
-                  />
-                </ActionPanel>
-              }
-            />
-          )}
-
-          {/* Existing usernames from cached data */}
-          {filteredUsernames.map((entry) => (
-            <List.Item
-              key={entry.index}
-              icon={entry.isDomainOnly ? Icon.Globe : Icon.Person}
-              title={entry.name}
-              subtitle={entry.isDomainOnly ? "No username" : undefined}
-              accessories={[{ text: `v${entry.version}` }]}
-              actions={
-                <ActionPanel>
-                  <Action
-                    title={
-                      entry.isDomainOnly ? "Use Domain Only" : "Select Username"
-                    }
-                    onAction={() => {
-                      if (entry.isDomainOnly) {
-                        // Domain-only: needs state unlock only if new domain
-                        startProcess(
-                          selectedDomain,
-                          undefined,
-                          entry.version,
-                          isNewDomain,
-                        );
-                      } else {
-                        // Existing username: no state unlock needed
+        {/* Existing usernames from cached data, sorted by match score */}
+        {sortedUsernames.length > 0 && (
+          <List.Section title={`Usernames for ${selectedDomain}`}>
+            {sortedUsernames.map((entry) => (
+              <List.Item
+                key={entry.index}
+                icon={Icon.Person}
+                title={entry.name}
+                accessories={[{ text: `v${entry.version}` }]}
+                actions={
+                  <ActionPanel>
+                    <Action
+                      title="Select Username"
+                      onAction={() => {
                         startProcess(
                           selectedDomain,
                           entry.name,
                           entry.version,
                           false,
                         );
+                      }}
+                    />
+                    {showNewUsernameOption && (
+                      <Action
+                        title={`Add "${usernameSearch}" as New Username`}
+                        icon={Icon.Plus}
+                        shortcut={{ modifiers: ["cmd"], key: "n" }}
+                        onAction={addNewUsernameAction}
+                      />
+                    )}
+                    <Action
+                      title="Bump Version"
+                      icon={Icon.Plus}
+                      shortcut={{ modifiers: ["cmd"], key: "b" }}
+                      onAction={() =>
+                        handleBumpVersion(selectedDomain, entry.name)
                       }
-                    }}
-                  />
-                  <Action
-                    title="Bump Version"
-                    icon={Icon.Plus}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
-                    onAction={() =>
-                      handleBumpVersion(
-                        selectedDomain,
-                        entry.isDomainOnly ? "" : entry.name,
-                      )
-                    }
-                  />
-                  {!entry.isDomainOnly && (
+                    />
                     <Action
                       title="Delete Username from State"
                       icon={Icon.Trash}
@@ -783,18 +881,91 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         handleDeleteUser(selectedDomain, entry.name)
                       }
                     />
-                  )}
+                    <Action
+                      title="Back to Domains"
+                      icon={Icon.ArrowLeft}
+                      shortcut={{ modifiers: ["cmd"], key: "backspace" }}
+                      onAction={goBackToDomains}
+                    />
+                  </ActionPanel>
+                }
+              />
+            ))}
+          </List.Section>
+        )}
+
+        {/* Add new username option */}
+        {showNewUsernameOption && (
+          <List.Section title="Add New">
+            <List.Item
+              icon={Icon.Plus}
+              title={`Add "${usernameSearch}"`}
+              subtitle="New username (requires state unlock)"
+              actions={
+                <ActionPanel>
+                  <Action
+                    title="Add New Username"
+                    onAction={addNewUsernameAction}
+                  />
                   <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}
-                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    shortcut={{ modifiers: ["cmd"], key: "backspace" }}
                     onAction={goBackToDomains}
                   />
                 </ActionPanel>
               }
             />
-          ))}
-        </List.Section>
+          </List.Section>
+        )}
+
+        {/* Domain-only option at the bottom */}
+        {domainOnlyEntry && (
+          <List.Section title="Other">
+            <List.Item
+              key={domainOnlyEntry.index}
+              icon={Icon.Globe}
+              title={domainOnlyEntry.name}
+              subtitle="No username"
+              accessories={[{ text: `v${domainOnlyEntry.version}` }]}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title="Use Domain Only"
+                    onAction={() => {
+                      startProcess(
+                        selectedDomain,
+                        undefined,
+                        domainOnlyEntry.version,
+                        isNewDomain,
+                      );
+                    }}
+                  />
+                  {showNewUsernameOption && (
+                    <Action
+                      title={`Add "${usernameSearch}" as New Username`}
+                      icon={Icon.Plus}
+                      shortcut={{ modifiers: ["cmd"], key: "n" }}
+                      onAction={addNewUsernameAction}
+                    />
+                  )}
+                  <Action
+                    title="Bump Version"
+                    icon={Icon.Plus}
+                    shortcut={{ modifiers: ["cmd"], key: "b" }}
+                    onAction={() => handleBumpVersion(selectedDomain, "")}
+                  />
+                  <Action
+                    title="Back to Domains"
+                    icon={Icon.ArrowLeft}
+                    shortcut={{ modifiers: ["cmd"], key: "backspace" }}
+                    onAction={goBackToDomains}
+                  />
+                </ActionPanel>
+              }
+            />
+          </List.Section>
+        )}
       </List>
     );
   }

@@ -14,8 +14,11 @@ pub const APP_SALT: [u8; 32] = [
 /// Fixed challenge for deriving state file encryption key
 pub const STATE_KEY_CHALLENGE: &str = "__dpg_state_key__";
 
-/// Password length in characters
+/// Password length in characters (default mode)
 pub const PASSWORD_LENGTH: usize = 32;
+
+/// Password length in characters (compat mode: shorter for restrictive sites)
+pub const COMPAT_PASSWORD_LENGTH: usize = 20;
 
 /// Seconds before clipboard is automatically cleared
 pub const CLIPBOARD_CLEAR_SECONDS: u64 = 20;
@@ -26,7 +29,8 @@ pub const YUBIKEY_SLOT: &str = "1";
 /// State file format version
 /// v1: Original format (no version field, per-domain versions)
 /// v2: Per-username versions, added format version field
-pub const STATE_FORMAT_VERSION: u32 = 2;
+/// v3: Per-username config objects (version + compat mode)
+pub const STATE_FORMAT_VERSION: u32 = 3;
 
 /// Get the ypass config directory, respecting XDG_CONFIG_HOME on Linux/macOS
 pub fn get_config_dir() -> PathBuf {

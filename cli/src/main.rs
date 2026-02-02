@@ -35,8 +35,8 @@ use pin::{
     verify_pin_checksum,
 };
 use state::{
-    DomainState, add_username, derive_state_key, get_usernames, get_version, list_all_entries,
-    load_state, save_state, set_version,
+    DomainState, add_username, derive_state_key, get_compat, get_usernames, get_version,
+    list_all_entries, load_state, save_state, set_compat, set_version,
 };
 use utils::normalize_domain;
 use yubikey::{get_yubikey_response, read_password_no_echo};
@@ -123,6 +123,18 @@ struct Args {
     /// Don't copy to clipboard (use with -p for piping)
     #[arg(long = "no-clipboard")]
     no_clipboard: bool,
+
+    /// Use compat mode: 20-char password with universally accepted characters
+    #[arg(long = "compat")]
+    compat: bool,
+
+    /// Enable compat mode for domain/username (saved in state, no password generated)
+    #[arg(long = "set-compat")]
+    set_compat: bool,
+
+    /// Disable compat mode for domain/username (saved in state, no password generated)
+    #[arg(long = "unset-compat")]
+    unset_compat: bool,
 }
 
 fn main() {
@@ -203,8 +215,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("PIN verification enabled for future use.");
         }
 
-        let password =
-            generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
+        let password = generate_password(
+            &yubikey_seed,
+            &pin,
+            &normalized_domain,
+            &username,
+            version,
+            args.compat,
+        )?;
 
         if !args.no_clipboard {
             copy_to_clipboard_with_clear(&password)?;
@@ -297,6 +315,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Handle --set-compat command
+    if args.set_compat {
+        let username = args.username.clone().unwrap_or_default();
+        set_compat(&mut state, &normalized_domain, &username, true);
+        save_state(&state, &state_key)?;
+        if username.is_empty() {
+            eprintln!(
+                "Enabled compat mode for '{}' (domain-only)",
+                normalized_domain
+            );
+        } else {
+            eprintln!(
+                "Enabled compat mode for '{}' / '{}'",
+                normalized_domain, username
+            );
+        }
+        return Ok(());
+    }
+
+    // Handle --unset-compat command
+    if args.unset_compat {
+        let username = args.username.clone().unwrap_or_default();
+        set_compat(&mut state, &normalized_domain, &username, false);
+        save_state(&state, &state_key)?;
+        if username.is_empty() {
+            eprintln!(
+                "Disabled compat mode for '{}' (domain-only)",
+                normalized_domain
+            );
+        } else {
+            eprintln!(
+                "Disabled compat mode for '{}' / '{}'",
+                normalized_domain, username
+            );
+        }
+        return Ok(());
+    }
+
     // Handle --delete-domain command
     if args.delete_domain {
         if state.domains.remove(&normalized_domain).is_some() {
@@ -380,7 +436,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let password = generate_password(&yubikey_seed, &pin, &normalized_domain, &username, version)?;
+    // Use compat from CLI flag or from saved state
+    let compat = args.compat || get_compat(&state, &normalized_domain, &username);
+
+    let password = generate_password(
+        &yubikey_seed,
+        &pin,
+        &normalized_domain,
+        &username,
+        version,
+        compat,
+    )?;
 
     if !has_checksum {
         let checksum = compute_pin_checksum(&pin)?;
@@ -400,12 +466,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", &*password);
     }
 
+    let compat_label = if compat { ", compat" } else { "" };
     let info = if username.is_empty() {
-        format!("domain={}, v{}", normalized_domain, version)
+        format!("domain={}, v{}{}", normalized_domain, version, compat_label)
     } else {
         format!(
-            "domain={}, user={}, v{}",
-            normalized_domain, username, version
+            "domain={}, user={}, v{}{}",
+            normalized_domain, username, version, compat_label
         )
     };
 
@@ -433,9 +500,9 @@ fn print_completions(shell: Shell) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{PASSWORD_LENGTH, STATE_FORMAT_VERSION};
-    use crate::password::{ALL_CHARS, SYMBOLS};
-    use crate::state::State;
+    use crate::config::{COMPAT_PASSWORD_LENGTH, PASSWORD_LENGTH, STATE_FORMAT_VERSION};
+    use crate::password::{ALL_CHARS, COMPAT_CHARS, COMPAT_SYMBOLS, SYMBOLS};
+    use crate::state::{State, UsernameConfig};
 
     #[test]
     fn test_hex_decode() {
@@ -484,8 +551,8 @@ mod tests {
         let username = "user@example.com";
         let version = 1;
 
-        let pass1 = generate_password(&seed, pin, domain, username, version).unwrap();
-        let pass2 = generate_password(&seed, pin, domain, username, version).unwrap();
+        let pass1 = generate_password(&seed, pin, domain, username, version, false).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, username, version, false).unwrap();
 
         assert_eq!(*pass1, *pass2);
         assert_eq!(pass1.len(), PASSWORD_LENGTH);
@@ -498,8 +565,8 @@ mod tests {
         let domain = "example.com";
         let version = 1;
 
-        let pass1 = generate_password(&seed, pin, domain, "user1", version).unwrap();
-        let pass2 = generate_password(&seed, pin, domain, "user2", version).unwrap();
+        let pass1 = generate_password(&seed, pin, domain, "user1", version, false).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, "user2", version, false).unwrap();
 
         assert_ne!(*pass1, *pass2);
     }
@@ -511,8 +578,8 @@ mod tests {
         let domain = "example.com";
         let username = "user";
 
-        let pass1 = generate_password(&seed, pin, domain, username, 1).unwrap();
-        let pass2 = generate_password(&seed, pin, domain, username, 2).unwrap();
+        let pass1 = generate_password(&seed, pin, domain, username, 1, false).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, username, 2, false).unwrap();
 
         assert_ne!(*pass1, *pass2);
     }
@@ -524,7 +591,7 @@ mod tests {
         let pin = "test123";
         let domain = "example.com";
 
-        let pass = generate_password(&seed, pin, domain, "", 1).unwrap();
+        let pass = generate_password(&seed, pin, domain, "", 1, false).unwrap();
         assert_eq!(pass.len(), PASSWORD_LENGTH);
     }
 
@@ -534,7 +601,7 @@ mod tests {
         let pin = "testpin";
         let domain = "test.com";
 
-        let password = generate_password(&seed, pin, domain, "", 1).unwrap();
+        let password = generate_password(&seed, pin, domain, "", 1, false).unwrap();
 
         assert!(password.chars().any(|c| c.is_ascii_lowercase()));
         assert!(password.chars().any(|c| c.is_ascii_uppercase()));
@@ -679,7 +746,7 @@ mod tests {
 
         for domain in &domains {
             let normalized = normalize_domain(domain);
-            let password = generate_password(&seed, pin, &normalized, "", 1).unwrap();
+            let password = generate_password(&seed, pin, &normalized, "", 1, false).unwrap();
 
             assert_eq!(password.len(), PASSWORD_LENGTH);
             // Password should only contain ASCII characters from our charset
@@ -687,8 +754,10 @@ mod tests {
         }
 
         // Different unicode domains should produce different passwords
-        let pass1 = generate_password(&seed, pin, &normalize_domain("münchen.de"), "", 1).unwrap();
-        let pass2 = generate_password(&seed, pin, &normalize_domain("北京.中国"), "", 1).unwrap();
+        let pass1 =
+            generate_password(&seed, pin, &normalize_domain("münchen.de"), "", 1, false).unwrap();
+        let pass2 =
+            generate_password(&seed, pin, &normalize_domain("北京.中国"), "", 1, false).unwrap();
         assert_ne!(*pass1, *pass2);
     }
 
@@ -700,13 +769,13 @@ mod tests {
 
         // Test with username > 1000 chars
         let long_username: String = "a".repeat(1500);
-        let password = generate_password(&seed, pin, domain, &long_username, 1).unwrap();
+        let password = generate_password(&seed, pin, domain, &long_username, 1, false).unwrap();
 
         assert_eq!(password.len(), PASSWORD_LENGTH);
         assert!(password.chars().all(|c| ALL_CHARS.contains(&(c as u8))));
 
         // Very long username should produce different password than short one
-        let short_password = generate_password(&seed, pin, domain, "short", 1).unwrap();
+        let short_password = generate_password(&seed, pin, domain, "short", 1, false).unwrap();
         assert_ne!(*password, *short_password);
     }
 
@@ -718,12 +787,12 @@ mod tests {
 
         // Test with username of 10,000 chars
         let huge_username: String = "x".repeat(10_000);
-        let password = generate_password(&seed, pin, domain, &huge_username, 1).unwrap();
+        let password = generate_password(&seed, pin, domain, &huge_username, 1, false).unwrap();
 
         assert_eq!(password.len(), PASSWORD_LENGTH);
 
         // Should be deterministic
-        let password2 = generate_password(&seed, pin, domain, &huge_username, 1).unwrap();
+        let password2 = generate_password(&seed, pin, domain, &huge_username, 1, false).unwrap();
         assert_eq!(*password, *password2);
     }
 
@@ -882,7 +951,8 @@ mod tests {
 
             let handle = thread::spawn(move || {
                 let username = format!("user{i}");
-                let password = generate_password(&seed_clone, &pin, &domain, &username, 1).unwrap();
+                let password =
+                    generate_password(&seed_clone, &pin, &domain, &username, 1, false).unwrap();
 
                 // Verify password is valid
                 assert_eq!(password.len(), PASSWORD_LENGTH);
@@ -899,7 +969,7 @@ mod tests {
 
         // Verify determinism - regenerate and compare
         for (username, expected_password) in &results {
-            let password = generate_password(&seed, pin, domain, username, 1).unwrap();
+            let password = generate_password(&seed, pin, domain, username, 1, false).unwrap();
             assert_eq!(&*password, expected_password);
         }
     }
@@ -940,12 +1010,147 @@ mod tests {
         assert!(empty_domain.is_empty() || !empty_domain.trim().is_empty());
 
         // Whitespace-only username should work
-        let password = generate_password(&seed, pin, "example.com", "   ", 1).unwrap();
+        let password = generate_password(&seed, pin, "example.com", "   ", 1, false).unwrap();
         assert_eq!(password.len(), PASSWORD_LENGTH);
 
         // Different whitespace patterns should produce different passwords
-        let pass1 = generate_password(&seed, pin, "example.com", " ", 1).unwrap();
-        let pass2 = generate_password(&seed, pin, "example.com", "  ", 1).unwrap();
+        let pass1 = generate_password(&seed, pin, "example.com", " ", 1, false).unwrap();
+        let pass2 = generate_password(&seed, pin, "example.com", "  ", 1, false).unwrap();
         assert_ne!(*pass1, *pass2);
+    }
+
+    // === Compat Mode Tests ===
+
+    #[test]
+    fn test_compat_password_length() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let pin = "testpin";
+        let domain = "example.com";
+
+        let password = generate_password(&seed, pin, domain, "", 1, true).unwrap();
+        assert_eq!(password.len(), COMPAT_PASSWORD_LENGTH);
+    }
+
+    #[test]
+    fn test_compat_password_charset() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let pin = "testpin";
+        let domain = "example.com";
+
+        let password = generate_password(&seed, pin, domain, "", 1, true).unwrap();
+
+        // All characters must be from the compat charset
+        assert!(password.chars().all(|c| COMPAT_CHARS.contains(&(c as u8))));
+        // Must not contain non-compat symbols (note: - is a compat symbol so not listed here)
+        let non_compat = b"^&()[]{}|;:,.<>?";
+        assert!(!password.chars().any(|c| non_compat.contains(&(c as u8))));
+    }
+
+    #[test]
+    fn test_compat_password_has_all_char_types() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let pin = "testpin";
+        let domain = "test.com";
+
+        let password = generate_password(&seed, pin, domain, "", 1, true).unwrap();
+
+        assert!(password.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(password.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(password.chars().any(|c| c.is_ascii_digit()));
+        assert!(password
+            .chars()
+            .any(|c| COMPAT_SYMBOLS.contains(&(c as u8))));
+    }
+
+    #[test]
+    fn test_compat_password_determinism() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04];
+        let pin = "test123";
+        let domain = "example.com";
+
+        let pass1 = generate_password(&seed, pin, domain, "user", 1, true).unwrap();
+        let pass2 = generate_password(&seed, pin, domain, "user", 1, true).unwrap();
+
+        assert_eq!(*pass1, *pass2);
+    }
+
+    #[test]
+    fn test_compat_differs_from_default() {
+        let seed = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let pin = "testpin";
+        let domain = "example.com";
+
+        let default_pass = generate_password(&seed, pin, domain, "", 1, false).unwrap();
+        let compat_pass = generate_password(&seed, pin, domain, "", 1, true).unwrap();
+
+        // Different lengths alone guarantee they differ, but also check content
+        assert_ne!(default_pass.len(), compat_pass.len());
+        assert_eq!(default_pass.len(), PASSWORD_LENGTH);
+        assert_eq!(compat_pass.len(), COMPAT_PASSWORD_LENGTH);
+    }
+
+    #[test]
+    fn test_compat_chars_length() {
+        // Verify COMPAT_CHARS has the expected length (26 + 26 + 10 + 10 = 72)
+        assert_eq!(COMPAT_CHARS.len(), 72);
+    }
+
+    #[test]
+    fn test_state_compat_serialization() {
+        let mut state = State::default();
+        add_username(&mut state, "github.com", "user1");
+        set_compat(&mut state, "github.com", "user1", true);
+        add_username(&mut state, "github.com", "user2");
+
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: State = serde_json::from_str(&json).unwrap();
+
+        assert!(get_compat(&loaded, "github.com", "user1"));
+        assert!(!get_compat(&loaded, "github.com", "user2"));
+        assert_eq!(get_version(&loaded, "github.com", "user1"), 1);
+    }
+
+    #[test]
+    fn test_state_legacy_format_compat() {
+        // Old v2 format: usernames map to plain u32
+        let json = r#"{"domains":{"github.com":{"usernames":{"user1":2,"user2":1}}}}"#;
+        let loaded: State = serde_json::from_str(json).unwrap();
+
+        // Should load with compat=false (default)
+        assert!(!get_compat(&loaded, "github.com", "user1"));
+        assert!(!get_compat(&loaded, "github.com", "user2"));
+        assert_eq!(get_version(&loaded, "github.com", "user1"), 2);
+        assert_eq!(get_version(&loaded, "github.com", "user2"), 1);
+    }
+
+    #[test]
+    fn test_state_new_format_compat() {
+        // New v3 format: usernames map to config objects
+        let json = r#"{"version":3,"domains":{"github.com":{"usernames":{"user1":{"version":2,"compat":true},"user2":{"version":1}}}}}"#;
+        let loaded: State = serde_json::from_str(json).unwrap();
+
+        assert!(get_compat(&loaded, "github.com", "user1"));
+        assert!(!get_compat(&loaded, "github.com", "user2"));
+        assert_eq!(get_version(&loaded, "github.com", "user1"), 2);
+        assert_eq!(get_version(&loaded, "github.com", "user2"), 1);
+    }
+
+    #[test]
+    fn test_state_mixed_format_compat() {
+        // Mix of old u32 and new object format (shouldn't happen, but handle gracefully)
+        let json = r#"{"version":3,"domains":{"site.com":{"usernames":{"old":1,"new":{"version":3,"compat":true}}}}}"#;
+        let loaded: State = serde_json::from_str(json).unwrap();
+
+        assert!(!get_compat(&loaded, "site.com", "old"));
+        assert!(get_compat(&loaded, "site.com", "new"));
+        assert_eq!(get_version(&loaded, "site.com", "old"), 1);
+        assert_eq!(get_version(&loaded, "site.com", "new"), 3);
+    }
+
+    #[test]
+    fn test_username_config_default() {
+        let config = UsernameConfig::default();
+        assert_eq!(config.version, 1);
+        assert!(!config.compat);
     }
 }

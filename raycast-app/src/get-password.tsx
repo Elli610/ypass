@@ -83,12 +83,14 @@ interface UsernameEntry {
   index: string;
   name: string;
   version: number;
+  compat: boolean;
   isDomainOnly?: boolean;
 }
 
 interface StoredUsername {
   name: string;
   version: number;
+  compat: boolean;
 }
 
 interface DomainEntry {
@@ -115,16 +117,19 @@ function parseDomains(output: string): DomainEntry[] {
       });
       continue;
     }
-    // Match username with version: "  - username (v1)" or "  - (domain-only) (v1)"
-    const usernameMatch = line.match(/^\s+-\s+(.+?)\s+\(v(\d+)\)/);
+    // Match username with version and optional [compat]:
+    // "  - username (v1)" or "  - (domain-only) (v1) [compat]"
+    const usernameMatch = line.match(/^\s+-\s+(.+?)\s+\(v(\d+)\)(\s+\[compat\])?/);
     if (usernameMatch && entries.length > 0) {
       const name = usernameMatch[1].trim();
       const version = parseInt(usernameMatch[2], 10);
+      const compat = Boolean(usernameMatch[3]);
       // "(domain-only)" becomes empty string
       const storedName = name === "(domain-only)" ? "" : name;
       entries[entries.length - 1].usernames.push({
         name: storedName,
         version,
+        compat,
       });
     }
   }
@@ -400,6 +405,75 @@ export default function Command() {
     [PASSWORD_GENERATOR_PATH],
   );
 
+  // Toggle compat mode for a domain/username (requires YubiKey touch)
+  const handleToggleCompat = useCallback(
+    (domain: string, username: string, currentCompat: boolean) => {
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
+      }
+
+      setStage("unlock-touch");
+      setOutput("");
+      outputBufferRef.current = "";
+
+      const compatFlag = currentCompat ? "--unset-compat" : "--set-compat";
+      const args = [domain, compatFlag];
+      if (username) {
+        args.push("-u", username);
+      }
+
+      const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+
+        if (
+          text.includes("Enabled compat") ||
+          text.includes("Disabled compat")
+        ) {
+          const newCompat = !currentCompat;
+          showToast({
+            style: Toast.Style.Success,
+            title: newCompat ? "Compat Enabled" : "Compat Disabled",
+            message: `${domain}${username ? ` / ${username}` : ""}`,
+          });
+          // Update local state
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.map((u) =>
+                      u.name === username ? { ...u, compat: newCompat } : u,
+                    ),
+                  }
+                : d,
+            ),
+          );
+          setUsernames((prev) =>
+            prev.map((u) =>
+              (u.isDomainOnly && username === "") ||
+              (!u.isDomainOnly && u.name === username)
+                ? { ...u, compat: newCompat }
+                : u,
+            ),
+          );
+          setStage("select-username");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(`Failed to toggle compat: ${err.message}`);
+        setStage("error");
+      });
+    },
+    [PASSWORD_GENERATOR_PATH],
+  );
+
   // Go back to domain selection
   const goBackToDomains = useCallback(() => {
     setSelectedDomain("");
@@ -438,6 +512,7 @@ export default function Command() {
         index: "d",
         name: "Domain-only mode",
         version: domainOnlyEntry?.version ?? 1,
+        compat: domainOnlyEntry?.compat ?? false,
         isDomainOnly: true,
       });
 
@@ -450,6 +525,7 @@ export default function Command() {
               index: String(i + 1),
               name: u.name,
               version: u.version,
+              compat: u.compat,
             });
           });
       }
@@ -499,6 +575,7 @@ export default function Command() {
               index: String(others.length + 1),
               name: username,
               version: 1,
+              compat: false,
             };
             return domainOnly
               ? [domainOnly, newEntry, ...others]
@@ -515,7 +592,10 @@ export default function Command() {
                       (u) => u.name.toLowerCase() === username.toLowerCase(),
                     )
                       ? d.usernames
-                      : [{ name: username, version: 1 }, ...d.usernames],
+                      : [
+                          { name: username, version: 1, compat: false },
+                          ...d.usernames,
+                        ],
                   }
                 : d,
             ),
@@ -842,7 +922,10 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                 key={entry.index}
                 icon={Icon.Person}
                 title={entry.name}
-                accessories={[{ text: `v${entry.version}` }]}
+                accessories={[
+                  ...(entry.compat ? [{ tag: "compat" }] : []),
+                  { text: `v${entry.version}` },
+                ]}
                 actions={
                   <ActionPanel>
                     <Action
@@ -864,6 +947,14 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         onAction={addNewUsernameAction}
                       />
                     )}
+                    <Action
+                      title={entry.compat ? "Disable Compat Mode" : "Enable Compat Mode"}
+                      icon={Icon.Switch}
+                      shortcut={{ modifiers: ["cmd"], key: "t" }}
+                      onAction={() =>
+                        handleToggleCompat(selectedDomain, entry.name, entry.compat)
+                      }
+                    />
                     <Action
                       title="Bump Version"
                       icon={Icon.Plus}
@@ -927,7 +1018,10 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
               icon={Icon.Globe}
               title={domainOnlyEntry.name}
               subtitle="No username"
-              accessories={[{ text: `v${domainOnlyEntry.version}` }]}
+              accessories={[
+                ...(domainOnlyEntry.compat ? [{ tag: "compat" }] : []),
+                { text: `v${domainOnlyEntry.version}` },
+              ]}
               actions={
                 <ActionPanel>
                   <Action
@@ -949,6 +1043,14 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       onAction={addNewUsernameAction}
                     />
                   )}
+                  <Action
+                    title={domainOnlyEntry.compat ? "Disable Compat Mode" : "Enable Compat Mode"}
+                    icon={Icon.Switch}
+                    shortcut={{ modifiers: ["cmd"], key: "t" }}
+                    onAction={() =>
+                      handleToggleCompat(selectedDomain, "", domainOnlyEntry.compat)
+                    }
+                  />
                   <Action
                     title="Bump Version"
                     icon={Icon.Plus}

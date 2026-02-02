@@ -34,11 +34,77 @@ impl Default for State {
     }
 }
 
-/// Domain state: maps username -> version number
+/// Per-username configuration (version + compat mode)
+#[derive(Debug, Clone, Serialize)]
+pub struct UsernameConfig {
+    pub version: u32,
+    /// Compatible mode: 20-char password with universally accepted characters
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compat: bool,
+}
+
+impl Default for UsernameConfig {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            compat: false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UsernameConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct UsernameConfigVisitor;
+
+        impl<'de> de::Visitor<'de> for UsernameConfigVisitor {
+            type Value = UsernameConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a version number (u32) or a UsernameConfig object")
+            }
+
+            // Handle legacy format: plain u32 version number
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<UsernameConfig, E> {
+                Ok(UsernameConfig {
+                    version: value as u32,
+                    compat: false,
+                })
+            }
+
+            // Handle new format: { "version": N, "compat": bool }
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<UsernameConfig, M::Error> {
+                let mut version = None;
+                let mut compat = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "version" => version = Some(map.next_value()?),
+                        "compat" => compat = Some(map.next_value()?),
+                        _ => { let _ = map.next_value::<serde_json::Value>(); }
+                    }
+                }
+
+                Ok(UsernameConfig {
+                    version: version.unwrap_or(1),
+                    compat: compat.unwrap_or(false),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(UsernameConfigVisitor)
+    }
+}
+
+/// Domain state: maps username -> config (version + compat mode)
 /// Empty string "" key represents domain-only mode
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DomainState {
-    pub usernames: HashMap<String, u32>,
+    pub usernames: HashMap<String, UsernameConfig>,
 }
 
 /// Get path to encrypted state file
@@ -158,20 +224,46 @@ pub fn get_version(state: &State, domain: &str, username: &str) -> u32 {
     state
         .domains
         .get(domain)
-        .and_then(|d| d.usernames.get(username).copied())
+        .and_then(|d| d.usernames.get(username).map(|c| c.version))
         .unwrap_or(1)
 }
 
-/// Add a username to a domain (with default version 1)
+/// Get compat mode for a domain/username combination
+pub fn get_compat(state: &State, domain: &str, username: &str) -> bool {
+    state
+        .domains
+        .get(domain)
+        .and_then(|d| d.usernames.get(username).map(|c| c.compat))
+        .unwrap_or(false)
+}
+
+/// Add a username to a domain (with default config)
 pub fn add_username(state: &mut State, domain: &str, username: &str) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    entry.usernames.entry(username.to_string()).or_insert(1);
+    entry
+        .usernames
+        .entry(username.to_string())
+        .or_insert_with(UsernameConfig::default);
 }
 
 /// Set version number for a domain/username combination
 pub fn set_version(state: &mut State, domain: &str, username: &str, version: u32) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    entry.usernames.insert(username.to_string(), version);
+    let config = entry
+        .usernames
+        .entry(username.to_string())
+        .or_insert_with(UsernameConfig::default);
+    config.version = version;
+}
+
+/// Set compat mode for a domain/username combination
+pub fn set_compat(state: &mut State, domain: &str, username: &str, compat: bool) {
+    let entry = state.domains.entry(domain.to_string()).or_default();
+    let config = entry
+        .usernames
+        .entry(username.to_string())
+        .or_insert_with(UsernameConfig::default);
+    config.compat = compat;
 }
 
 /// List all stored domains and usernames
@@ -191,11 +283,12 @@ pub fn list_all_entries(state: &State) {
         } else {
             let mut users: Vec<_> = entry.usernames.iter().collect();
             users.sort_by_key(|(k, _)| *k);
-            for (username, version) in users {
+            for (username, config) in users {
+                let compat_tag = if config.compat { " [compat]" } else { "" };
                 if username.is_empty() {
-                    println!("  - (domain-only) (v{})", version);
+                    println!("  - (domain-only) (v{}){}", config.version, compat_tag);
                 } else {
-                    println!("  - {} (v{})", username, version);
+                    println!("  - {} (v{}){}", username, config.version, compat_tag);
                 }
             }
         }

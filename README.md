@@ -57,7 +57,7 @@ Features:
 - Domain/username selection UI
 - YubiKey touch prompts
 - Clipboard integration
-- Cmd+G to generate/toggle compat password, Cmd+T to toggle compat mode
+- Cmd+G to generate/toggle compat password for any entry
 
 ## Quick Start
 

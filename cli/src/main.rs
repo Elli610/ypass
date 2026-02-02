@@ -1066,9 +1066,11 @@ mod tests {
         assert!(password.chars().any(|c| c.is_ascii_lowercase()));
         assert!(password.chars().any(|c| c.is_ascii_uppercase()));
         assert!(password.chars().any(|c| c.is_ascii_digit()));
-        assert!(password
-            .chars()
-            .any(|c| COMPAT_SYMBOLS.contains(&(c as u8))));
+        assert!(
+            password
+                .chars()
+                .any(|c| COMPAT_SYMBOLS.contains(&(c as u8)))
+        );
     }
 
     #[test]

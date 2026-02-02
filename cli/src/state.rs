@@ -77,7 +77,10 @@ impl<'de> Deserialize<'de> for UsernameConfig {
             }
 
             // Handle new format: { "version": N, "compat": bool }
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<UsernameConfig, M::Error> {
+            fn visit_map<M: de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<UsernameConfig, M::Error> {
                 let mut version = None;
                 let mut compat = None;
 
@@ -85,7 +88,9 @@ impl<'de> Deserialize<'de> for UsernameConfig {
                     match key.as_str() {
                         "version" => version = Some(map.next_value()?),
                         "compat" => compat = Some(map.next_value()?),
-                        _ => { let _ = map.next_value::<serde_json::Value>(); }
+                        _ => {
+                            let _ = map.next_value::<serde_json::Value>();
+                        }
                     }
                 }
 
@@ -240,29 +245,20 @@ pub fn get_compat(state: &State, domain: &str, username: &str) -> bool {
 /// Add a username to a domain (with default config)
 pub fn add_username(state: &mut State, domain: &str, username: &str) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    entry
-        .usernames
-        .entry(username.to_string())
-        .or_insert_with(UsernameConfig::default);
+    entry.usernames.entry(username.to_string()).or_default();
 }
 
 /// Set version number for a domain/username combination
 pub fn set_version(state: &mut State, domain: &str, username: &str, version: u32) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    let config = entry
-        .usernames
-        .entry(username.to_string())
-        .or_insert_with(UsernameConfig::default);
+    let config = entry.usernames.entry(username.to_string()).or_default();
     config.version = version;
 }
 
 /// Set compat mode for a domain/username combination
 pub fn set_compat(state: &mut State, domain: &str, username: &str, compat: bool) {
     let entry = state.domains.entry(domain.to_string()).or_default();
-    let config = entry
-        .usernames
-        .entry(username.to_string())
-        .or_insert_with(UsernameConfig::default);
+    let config = entry.usernames.entry(username.to_string()).or_default();
     config.compat = compat;
 }
 

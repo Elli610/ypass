@@ -175,9 +175,7 @@ fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<String>, Box<dyn std::err
 }
 
 /// Convert derived bytes to a compat password (20 chars, universally accepted charset)
-fn bytes_to_password_compat(
-    bytes: &[u8],
-) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
+fn bytes_to_password_compat(bytes: &[u8]) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
     let mut password = Zeroizing::new(String::with_capacity(COMPAT_PASSWORD_LENGTH));
     let compat_chars_len = COMPAT_CHARS.len();
 

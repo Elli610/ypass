@@ -1,6 +1,7 @@
 import {
   Action,
   ActionPanel,
+  Color,
   Detail,
   Form,
   Icon,
@@ -609,9 +610,11 @@ export default function Command() {
       setError("");
 
       // Build args based on whether this is a new username
+      // forceCompat needs state access only if compat isn't already saved
+      const needsStateForCompat = forceCompat && !isNewUsername;
       const args = [domain];
-      if (isNewUsername) {
-        // New username: need state unlock to save it, then password touch
+      if (isNewUsername || needsStateForCompat) {
+        // Need state unlock to save new user or compat mode change
         setStage("unlock-touch");
       } else {
         // Existing username: use --skip-state to avoid second state unlock
@@ -632,15 +635,43 @@ export default function Command() {
 
       processRef.current = proc;
 
+      const onSuccess = () => {
+        // Update local state to reflect compat if it was persisted
+        if (forceCompat) {
+          const uname = username ?? "";
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.map((u) =>
+                      u.name === uname ? { ...u, compat: true } : u,
+                    ),
+                  }
+                : d,
+            ),
+          );
+          setUsernames((prev) =>
+            prev.map((u) =>
+              (u.isDomainOnly && uname === "") ||
+              (!u.isDomainOnly && u.name === uname)
+                ? { ...u, compat: true }
+                : u,
+            ),
+          );
+        }
+        setStage("success");
+        showHUD("Password copied to clipboard!");
+        setTimeout(() => popToRoot(), 1000);
+      };
+
       proc.stdout?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
         setOutput((prev) => prev + text);
 
         if (text.includes("copied to clipboard")) {
-          setStage("success");
-          showHUD("Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
+          onSuccess();
         }
       });
 
@@ -662,9 +693,7 @@ export default function Command() {
 
         // Check latest text for completion/error
         if (text.includes("copied to clipboard")) {
-          setStage("success");
-          showHUD("Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
+          onSuccess();
         } else if (
           text.toLowerCase().includes("error") &&
           !text.includes("Touch YubiKey")
@@ -928,8 +957,10 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                 icon={Icon.Person}
                 title={entry.name}
                 accessories={[
-                  ...(entry.compat ? [{ tag: "compat" }] : []),
                   { text: `v${entry.version}` },
+                  ...(entry.compat
+                    ? [{ tag: { value: "compat", color: Color.Orange } }]
+                    : []),
                 ]}
                 actions={
                   <ActionPanel>
@@ -941,11 +972,12 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                           entry.name,
                           entry.version,
                           false,
+                          entry.compat,
                         );
                       }}
                     />
                     <Action
-                      title="Generate Compat Password"
+                      title={entry.compat ? "Generate Full Password" : "Generate Compat Password"}
                       icon={Icon.Shield}
                       shortcut={{ modifiers: ["cmd"], key: "g" }}
                       onAction={() => {
@@ -954,7 +986,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                           entry.name,
                           entry.version,
                           false,
-                          true,
+                          !entry.compat,
                         );
                       }}
                     />
@@ -1052,8 +1084,10 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
               title={domainOnlyEntry.name}
               subtitle="No username"
               accessories={[
-                ...(domainOnlyEntry.compat ? [{ tag: "compat" }] : []),
                 { text: `v${domainOnlyEntry.version}` },
+                ...(domainOnlyEntry.compat
+                  ? [{ tag: { value: "compat", color: Color.Orange } }]
+                  : []),
               ]}
               actions={
                 <ActionPanel>
@@ -1065,11 +1099,12 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         undefined,
                         domainOnlyEntry.version,
                         isNewDomain,
+                        domainOnlyEntry.compat,
                       );
                     }}
                   />
                   <Action
-                    title="Generate Compat Password"
+                    title={domainOnlyEntry.compat ? "Generate Full Password" : "Generate Compat Password"}
                     icon={Icon.Shield}
                     shortcut={{ modifiers: ["cmd"], key: "g" }}
                     onAction={() => {
@@ -1078,7 +1113,7 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         undefined,
                         domainOnlyEntry.version,
                         isNewDomain,
-                        true,
+                        !domainOnlyEntry.compat,
                       );
                     }}
                   />

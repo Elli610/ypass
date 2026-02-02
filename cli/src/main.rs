@@ -439,6 +439,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Use compat from CLI flag or from saved state
     let compat = args.compat || get_compat(&state, &normalized_domain, &username);
 
+    // If --compat was explicitly passed and state is available, persist it
+    if args.compat && !args.skip_state {
+        let already_compat = get_compat(&state, &normalized_domain, &username);
+        if !already_compat {
+            set_compat(&mut state, &normalized_domain, &username, true);
+            state_modified = true;
+        }
+    }
+
     let password = generate_password(
         &yubikey_seed,
         &pin,

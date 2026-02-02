@@ -70,8 +70,9 @@ impl<'de> Deserialize<'de> for UsernameConfig {
 
             // Handle legacy format: plain u32 version number
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<UsernameConfig, E> {
+                let version = u32::try_from(value).map_err(de::Error::custom)?;
                 Ok(UsernameConfig {
-                    version: value as u32,
+                    version,
                     compat: false,
                 })
             }
@@ -89,7 +90,7 @@ impl<'de> Deserialize<'de> for UsernameConfig {
                         "version" => version = Some(map.next_value()?),
                         "compat" => compat = Some(map.next_value()?),
                         _ => {
-                            let _ = map.next_value::<serde_json::Value>();
+                            map.next_value::<de::IgnoredAny>()?;
                         }
                     }
                 }

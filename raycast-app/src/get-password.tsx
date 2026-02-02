@@ -244,11 +244,14 @@ export default function Command() {
         { env: { ...process.env, PATH: MACOS_PATH } },
       );
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
-        if (text.includes("Deleted username")) {
+        if (buffer.includes("Deleted username")) {
           showToast({
             style: Toast.Style.Success,
             title: "Deleted",
@@ -267,7 +270,7 @@ export default function Command() {
             ),
           );
           setStage("select-username");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -302,11 +305,14 @@ export default function Command() {
         env: { ...process.env, PATH: MACOS_PATH },
       });
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
-        if (text.includes("Deleted domain")) {
+        if (buffer.includes("Deleted domain")) {
           showToast({
             style: Toast.Style.Success,
             title: "Deleted",
@@ -315,7 +321,7 @@ export default function Command() {
           // Update local state and go back to domain selection
           setDomains((prev) => prev.filter((d) => d.domain !== domain));
           setStage("select-domain");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -355,14 +361,17 @@ export default function Command() {
         env: { ...process.env, PATH: MACOS_PATH },
       });
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
         // Match "Bumped version ... from X to Y"
-        const match = text.match(/from (\d+) to (\d+)/);
-        if (match) {
-          const newVersion = parseInt(match[2], 10);
+        const versionMatch = buffer.match(/from (\d+) to (\d+)/);
+        if (versionMatch) {
+          const newVersion = parseInt(versionMatch[2], 10);
           showToast({
             style: Toast.Style.Success,
             title: "Version Bumped",
@@ -391,7 +400,7 @@ export default function Command() {
             ),
           );
           setStage("select-username");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -430,13 +439,16 @@ export default function Command() {
         env: { ...process.env, PATH: MACOS_PATH },
       });
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
         if (
-          text.includes("Enabled compat") ||
-          text.includes("Disabled compat")
+          buffer.includes("Enabled compat") ||
+          buffer.includes("Disabled compat")
         ) {
           const newCompat = !currentCompat;
           showToast({

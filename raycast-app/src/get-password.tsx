@@ -120,7 +120,9 @@ function parseDomains(output: string): DomainEntry[] {
     }
     // Match username with version and optional [compat]:
     // "  - username (v1)" or "  - (domain-only) (v1) [compat]"
-    const usernameMatch = line.match(/^\s+-\s+(.+?)\s+\(v(\d+)\)(\s+\[compat\])?/);
+    const usernameMatch = line.match(
+      /^\s+-\s+(.+?)\s+\(v(\d+)\)(\s+\[compat\])?/,
+    );
     if (usernameMatch && entries.length > 0) {
       const name = usernameMatch[1].trim();
       const version = parseInt(usernameMatch[2], 10);
@@ -977,7 +979,11 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       }}
                     />
                     <Action
-                      title={entry.compat ? "Generate Full Password" : "Generate Compat Password"}
+                      title={
+                        entry.compat
+                          ? "Generate Full Password"
+                          : "Generate Compat Password"
+                      }
                       icon={Icon.Shield}
                       shortcut={{ modifiers: ["cmd"], key: "g" }}
                       onAction={() => {
@@ -999,11 +1005,19 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       />
                     )}
                     <Action
-                      title={entry.compat ? "Disable Compat Mode" : "Enable Compat Mode"}
+                      title={
+                        entry.compat
+                          ? "Disable Compat Mode"
+                          : "Enable Compat Mode"
+                      }
                       icon={Icon.Switch}
                       shortcut={{ modifiers: ["cmd"], key: "t" }}
                       onAction={() =>
-                        handleToggleCompat(selectedDomain, entry.name, entry.compat)
+                        handleToggleCompat(
+                          selectedDomain,
+                          entry.name,
+                          entry.compat,
+                        )
                       }
                     />
                     <Action
@@ -1104,7 +1118,11 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                     }}
                   />
                   <Action
-                    title={domainOnlyEntry.compat ? "Generate Full Password" : "Generate Compat Password"}
+                    title={
+                      domainOnlyEntry.compat
+                        ? "Generate Full Password"
+                        : "Generate Compat Password"
+                    }
                     icon={Icon.Shield}
                     shortcut={{ modifiers: ["cmd"], key: "g" }}
                     onAction={() => {
@@ -1126,11 +1144,19 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                     />
                   )}
                   <Action
-                    title={domainOnlyEntry.compat ? "Disable Compat Mode" : "Enable Compat Mode"}
+                    title={
+                      domainOnlyEntry.compat
+                        ? "Disable Compat Mode"
+                        : "Enable Compat Mode"
+                    }
                     icon={Icon.Switch}
                     shortcut={{ modifiers: ["cmd"], key: "t" }}
                     onAction={() =>
-                      handleToggleCompat(selectedDomain, "", domainOnlyEntry.compat)
+                      handleToggleCompat(
+                        selectedDomain,
+                        "",
+                        domainOnlyEntry.compat,
+                      )
                     }
                   />
                   <Action

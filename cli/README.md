@@ -19,6 +19,7 @@ Same inputs always produce the same password. No password storage needed.
 - **Domain normalization**: `GitHub.com`, `https://www.github.com/path` all normalize to `github.com`
 - **Multi-account support**: Different passwords for different usernames on the same domain
 - **Password rotation**: Bump version to generate new passwords without changing PIN
+- **Compat mode**: 20-char passwords with universally accepted characters for sites with strict password rules
 - **PIN verification**: Detects typos before generating wrong passwords (no YubiKey required)
 - **Encrypted state file**: Usernames and versions stored in `~/.config/ypass/state.enc`, encrypted with YubiKey
 - **Interactive mode**: Run without arguments to search and select from stored domains
@@ -129,6 +130,9 @@ Options:
   --delete-domain         Delete domain and all its usernames
   --bump-version          Increment version (use with -u for specific username)
   --list                  List all domains and usernames
+  --compat                Generate compat password (20 chars, safe charset) and save preference
+  --set-compat            Mark a domain/username as compat (no password generated)
+  --unset-compat          Remove compat flag from a domain/username
   --skip-state            Skip state unlock, use with -u and -v (for scripts/integrations)
   --reset-pin             Reset PIN verification (use when changing PIN)
   --check-pin             Verify PIN from stdin (exit 0=ok, 1=wrong, no YubiKey needed)
@@ -193,6 +197,42 @@ ypass github.com -u myuser -v 3
 ```
 
 > Note: Versions are tracked per-username. Latest version is used by default.
+
+### Compat Mode
+
+Some websites reject passwords that contain certain special characters or are too long. Compat mode generates a 20-character password using only universally accepted characters:
+
+- Lowercase: `a-z`
+- Uppercase: `A-Z`
+- Digits: `0-9`
+- Symbols: `!@#$%*-_+=`
+
+The compat preference is saved per domain/username entry in the state file. Once set, future password generations for that entry will automatically use compat mode.
+
+```bash
+# Generate a compat password (and persist the preference)
+ypass github.com --compat -u myuser
+
+# Mark an existing entry as compat (no password generated)
+ypass github.com --set-compat -u myuser
+
+# Remove compat flag (revert to full 32-char password)
+ypass github.com --unset-compat -u myuser
+
+# One-shot compat without persisting (with --skip-state)
+ypass github.com --compat --skip-state -u myuser -v 1
+```
+
+Compat entries are marked in the `--list` output:
+
+```bash
+ypass --list
+# github.com
+#   - myuser (v1) [compat]
+#   - other (v2)
+```
+
+> Note: Compat mode uses the same derivation process (Argon2id) as normal mode but maps the output bytes to a smaller, 72-character alphabet and truncates to 20 characters. The password is deterministic -- same inputs always produce the same compat password.
 
 ### Deleting Entries
 
@@ -290,6 +330,7 @@ Usernames and versions are stored encrypted at `~/.config/ypass/state.enc`.
 |---------|-------------|
 | v1 | Original format, per-domain versions |
 | v2 | Per-username versions, format version field |
+| v3 | Per-username compat flag |
 
 The CLI automatically upgrades old state files on first use. If you try to use a state file from a newer CLI version, you'll be prompted to update.
 
@@ -319,9 +360,10 @@ This will generate identical passwords as your original YubiKey.
 Edit `src/main.rs` constants:
 
 ```rust
-const PASSWORD_LENGTH: usize = 32;       // Password length
-const CLIPBOARD_CLEAR_SECONDS: u64 = 20; // Clipboard timeout
-const YUBIKEY_SLOT: &str = "1";          // YubiKey slot (1 or 2)
+const PASSWORD_LENGTH: usize = 32;              // Full password length
+const COMPAT_PASSWORD_LENGTH: usize = 20;       // Compat password length
+const CLIPBOARD_CLEAR_SECONDS: u64 = 20;        // Clipboard timeout
+const YUBIKEY_SLOT: &str = "1";                 // YubiKey slot (1 or 2)
 ```
 
 To generate your own application salt:

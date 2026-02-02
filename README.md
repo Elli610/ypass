@@ -36,12 +36,14 @@ Rust command-line application for generating passwords.
 ```bash
 ypass github              # Generate password for domain
 ypass github -u user      # With specific username
+ypass github --compat     # Generate compat password (20 chars, safe charset)
 ypass --list              # List all stored domains
 ```
 
 Features:
 - Interactive mode with Tab completion
 - Encrypted state file for usernames/versions
+- Compat mode for sites with strict password rules (20 chars, universally accepted characters)
 - ~94% PIN typo detection (no YubiKey needed) (4-bit checksum)
 - Auto-clearing clipboard (20 seconds)
 - Cross-platform (macOS, Linux _(not tested yet)_, Windows _(not tested yet)_)
@@ -55,6 +57,7 @@ Features:
 - Domain/username selection UI
 - YubiKey touch prompts
 - Clipboard integration
+- Cmd+G to generate/toggle compat password, Cmd+T to toggle compat mode
 
 ## Quick Start
 
@@ -94,7 +97,7 @@ ypass github.com
 | PIN | Memorized, never stored |
 | State file | Encrypted with YubiKey-derived key |
 | Clipboard | Auto-clears after 20 seconds |
-| Generated passwords | 32 chars, all character types |
+| Generated passwords | 32 chars, all character types (or 20 chars in compat mode) |
 
 Two-factor by design: **something you have** (YubiKey) + **something you know** (PIN).
 

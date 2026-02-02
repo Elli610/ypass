@@ -228,7 +228,7 @@ Compat entries are marked in the `--list` output:
 ```bash
 ypass --list
 # github.com
-#   - myuser (v1) (compat)
+#   - myuser (v1) [compat]
 #   - other (v2)
 ```
 

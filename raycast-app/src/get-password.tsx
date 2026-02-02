@@ -1,6 +1,7 @@
 import {
   Action,
   ActionPanel,
+  Color,
   Detail,
   Form,
   Icon,
@@ -83,12 +84,14 @@ interface UsernameEntry {
   index: string;
   name: string;
   version: number;
+  compat: boolean;
   isDomainOnly?: boolean;
 }
 
 interface StoredUsername {
   name: string;
   version: number;
+  compat: boolean;
 }
 
 interface DomainEntry {
@@ -115,16 +118,21 @@ function parseDomains(output: string): DomainEntry[] {
       });
       continue;
     }
-    // Match username with version: "  - username (v1)" or "  - (domain-only) (v1)"
-    const usernameMatch = line.match(/^\s+-\s+(.+?)\s+\(v(\d+)\)/);
+    // Match username with version and optional [compat]:
+    // "  - username (v1)" or "  - (domain-only) (v1) [compat]"
+    const usernameMatch = line.match(
+      /^\s+-\s+(.+?)\s+\(v(\d+)\)(\s+\[compat\])?/,
+    );
     if (usernameMatch && entries.length > 0) {
       const name = usernameMatch[1].trim();
       const version = parseInt(usernameMatch[2], 10);
+      const compat = Boolean(usernameMatch[3]);
       // "(domain-only)" becomes empty string
       const storedName = name === "(domain-only)" ? "" : name;
       entries[entries.length - 1].usernames.push({
         name: storedName,
         version,
+        compat,
       });
     }
   }
@@ -236,11 +244,14 @@ export default function Command() {
         { env: { ...process.env, PATH: MACOS_PATH } },
       );
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
-        if (text.includes("Deleted username")) {
+        if (buffer.includes("Deleted username")) {
           showToast({
             style: Toast.Style.Success,
             title: "Deleted",
@@ -259,7 +270,7 @@ export default function Command() {
             ),
           );
           setStage("select-username");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -294,11 +305,14 @@ export default function Command() {
         env: { ...process.env, PATH: MACOS_PATH },
       });
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
-        if (text.includes("Deleted domain")) {
+        if (buffer.includes("Deleted domain")) {
           showToast({
             style: Toast.Style.Success,
             title: "Deleted",
@@ -307,7 +321,7 @@ export default function Command() {
           // Update local state and go back to domain selection
           setDomains((prev) => prev.filter((d) => d.domain !== domain));
           setStage("select-domain");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -347,14 +361,17 @@ export default function Command() {
         env: { ...process.env, PATH: MACOS_PATH },
       });
 
+      processRef.current = proc;
+
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
 
         // Match "Bumped version ... from X to Y"
-        const match = text.match(/from (\d+) to (\d+)/);
-        if (match) {
-          const newVersion = parseInt(match[2], 10);
+        const versionMatch = buffer.match(/from (\d+) to (\d+)/);
+        if (versionMatch) {
+          const newVersion = parseInt(versionMatch[2], 10);
           showToast({
             style: Toast.Style.Success,
             title: "Version Bumped",
@@ -383,7 +400,7 @@ export default function Command() {
             ),
           );
           setStage("select-username");
-        } else if (text.includes("not found")) {
+        } else if (buffer.includes("not found")) {
           showToast({
             style: Toast.Style.Failure,
             title: "Not Found",
@@ -394,6 +411,78 @@ export default function Command() {
 
       proc.on("error", (err) => {
         setError(`Failed to bump version: ${err.message}`);
+        setStage("error");
+      });
+    },
+    [PASSWORD_GENERATOR_PATH],
+  );
+
+  // Toggle compat mode for a domain/username (requires YubiKey touch)
+  const handleToggleCompat = useCallback(
+    (domain: string, username: string, currentCompat: boolean) => {
+      if (processRef.current) {
+        processRef.current.kill();
+        processRef.current = null;
+      }
+
+      setStage("unlock-touch");
+      setOutput("");
+      outputBufferRef.current = "";
+
+      const compatFlag = currentCompat ? "--unset-compat" : "--set-compat";
+      const args = [domain, compatFlag];
+      if (username) {
+        args.push("-u", username);
+      }
+
+      const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
+        env: { ...process.env, PATH: MACOS_PATH },
+      });
+
+      processRef.current = proc;
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        outputBufferRef.current += text;
+        const buffer = outputBufferRef.current;
+
+        if (
+          buffer.includes("Enabled compat") ||
+          buffer.includes("Disabled compat")
+        ) {
+          const newCompat = !currentCompat;
+          showToast({
+            style: Toast.Style.Success,
+            title: newCompat ? "Compat Enabled" : "Compat Disabled",
+            message: `${domain}${username ? ` / ${username}` : ""}`,
+          });
+          // Update local state
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.map((u) =>
+                      u.name === username ? { ...u, compat: newCompat } : u,
+                    ),
+                  }
+                : d,
+            ),
+          );
+          setUsernames((prev) =>
+            prev.map((u) =>
+              (u.isDomainOnly && username === "") ||
+              (!u.isDomainOnly && u.name === username)
+                ? { ...u, compat: newCompat }
+                : u,
+            ),
+          );
+          setStage("select-username");
+        }
+      });
+
+      proc.on("error", (err) => {
+        setError(`Failed to toggle compat: ${err.message}`);
         setStage("error");
       });
     },
@@ -438,6 +527,7 @@ export default function Command() {
         index: "d",
         name: "Domain-only mode",
         version: domainOnlyEntry?.version ?? 1,
+        compat: domainOnlyEntry?.compat ?? false,
         isDomainOnly: true,
       });
 
@@ -450,6 +540,7 @@ export default function Command() {
               index: String(i + 1),
               name: u.name,
               version: u.version,
+              compat: u.compat,
             });
           });
       }
@@ -462,12 +553,14 @@ export default function Command() {
 
   // Start password generation with specific domain, optional username, and version
   // isNewUsername: if true, don't use --skip-state so CLI can add the new user to state
+  // forceCompat: if true, pass --compat to generate a compat password (one-shot override)
   const startProcess = useCallback(
     (
       domain: string,
       username?: string,
       version?: number,
       isNewUsername?: boolean,
+      forceCompat?: boolean,
     ) => {
       // Prevent multiple simultaneous processes
       if (processRef.current) {
@@ -499,6 +592,7 @@ export default function Command() {
               index: String(others.length + 1),
               name: username,
               version: 1,
+              compat: false,
             };
             return domainOnly
               ? [domainOnly, newEntry, ...others]
@@ -515,7 +609,10 @@ export default function Command() {
                       (u) => u.name.toLowerCase() === username.toLowerCase(),
                     )
                       ? d.usernames
-                      : [{ name: username, version: 1 }, ...d.usernames],
+                      : [
+                          { name: username, version: 1, compat: false },
+                          ...d.usernames,
+                        ],
                   }
                 : d,
             ),
@@ -527,9 +624,11 @@ export default function Command() {
       setError("");
 
       // Build args based on whether this is a new username
+      // forceCompat needs state access only if compat isn't already saved
+      const needsStateForCompat = forceCompat && !isNewUsername;
       const args = [domain];
-      if (isNewUsername) {
-        // New username: need state unlock to save it, then password touch
+      if (isNewUsername || needsStateForCompat) {
+        // Need state unlock to save new user or compat mode change
         setStage("unlock-touch");
       } else {
         // Existing username: use --skip-state to avoid second state unlock
@@ -540,6 +639,9 @@ export default function Command() {
       if (username) {
         args.push("-u", username);
       }
+      if (forceCompat) {
+        args.push("--compat");
+      }
 
       const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
         env: { ...process.env, PATH: MACOS_PATH },
@@ -547,15 +649,43 @@ export default function Command() {
 
       processRef.current = proc;
 
+      const onSuccess = () => {
+        // Update local state to reflect compat if it was persisted
+        if (forceCompat) {
+          const uname = username ?? "";
+          setDomains((prev) =>
+            prev.map((d) =>
+              d.domain === domain
+                ? {
+                    ...d,
+                    usernames: d.usernames.map((u) =>
+                      u.name === uname ? { ...u, compat: true } : u,
+                    ),
+                  }
+                : d,
+            ),
+          );
+          setUsernames((prev) =>
+            prev.map((u) =>
+              (u.isDomainOnly && uname === "") ||
+              (!u.isDomainOnly && u.name === uname)
+                ? { ...u, compat: true }
+                : u,
+            ),
+          );
+        }
+        setStage("success");
+        showHUD("Password copied to clipboard!");
+        setTimeout(() => popToRoot(), 1000);
+      };
+
       proc.stdout?.on("data", (data: Buffer) => {
         const text = data.toString();
         outputBufferRef.current += text;
         setOutput((prev) => prev + text);
 
         if (text.includes("copied to clipboard")) {
-          setStage("success");
-          showHUD("Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
+          onSuccess();
         }
       });
 
@@ -577,9 +707,7 @@ export default function Command() {
 
         // Check latest text for completion/error
         if (text.includes("copied to clipboard")) {
-          setStage("success");
-          showHUD("Password copied to clipboard!");
-          setTimeout(() => popToRoot(), 1000);
+          onSuccess();
         } else if (
           text.toLowerCase().includes("error") &&
           !text.includes("Touch YubiKey")
@@ -842,17 +970,41 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                 key={entry.index}
                 icon={Icon.Person}
                 title={entry.name}
-                accessories={[{ text: `v${entry.version}` }]}
+                accessories={[
+                  { text: `v${entry.version}` },
+                  ...(entry.compat
+                    ? [{ tag: { value: "compat", color: Color.Orange } }]
+                    : []),
+                ]}
                 actions={
                   <ActionPanel>
                     <Action
-                      title="Select Username"
+                      title="Generate Password"
                       onAction={() => {
                         startProcess(
                           selectedDomain,
                           entry.name,
                           entry.version,
                           false,
+                          entry.compat,
+                        );
+                      }}
+                    />
+                    <Action
+                      title={
+                        entry.compat
+                          ? "Generate Full Password"
+                          : "Generate Compat Password"
+                      }
+                      icon={Icon.Shield}
+                      shortcut={{ modifiers: ["cmd"], key: "g" }}
+                      onAction={() => {
+                        startProcess(
+                          selectedDomain,
+                          entry.name,
+                          entry.version,
+                          false,
+                          !entry.compat,
                         );
                       }}
                     />
@@ -864,6 +1016,22 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         onAction={addNewUsernameAction}
                       />
                     )}
+                    <Action
+                      title={
+                        entry.compat
+                          ? "Disable Compat Mode"
+                          : "Enable Compat Mode"
+                      }
+                      icon={Icon.Switch}
+                      shortcut={{ modifiers: ["cmd"], key: "t" }}
+                      onAction={() =>
+                        handleToggleCompat(
+                          selectedDomain,
+                          entry.name,
+                          entry.compat,
+                        )
+                      }
+                    />
                     <Action
                       title="Bump Version"
                       icon={Icon.Plus}
@@ -908,6 +1076,20 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                     onAction={addNewUsernameAction}
                   />
                   <Action
+                    title="Generate Compat Password"
+                    icon={Icon.Shield}
+                    shortcut={{ modifiers: ["cmd"], key: "g" }}
+                    onAction={() => {
+                      startProcess(
+                        selectedDomain,
+                        usernameSearch,
+                        1,
+                        true,
+                        true,
+                      );
+                    }}
+                  />
+                  <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}
                     shortcut={{ modifiers: ["cmd"], key: "backspace" }}
@@ -927,7 +1109,12 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
               icon={Icon.Globe}
               title={domainOnlyEntry.name}
               subtitle="No username"
-              accessories={[{ text: `v${domainOnlyEntry.version}` }]}
+              accessories={[
+                { text: `v${domainOnlyEntry.version}` },
+                ...(domainOnlyEntry.compat
+                  ? [{ tag: { value: "compat", color: Color.Orange } }]
+                  : []),
+              ]}
               actions={
                 <ActionPanel>
                   <Action
@@ -938,6 +1125,25 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         undefined,
                         domainOnlyEntry.version,
                         isNewDomain,
+                        domainOnlyEntry.compat,
+                      );
+                    }}
+                  />
+                  <Action
+                    title={
+                      domainOnlyEntry.compat
+                        ? "Generate Full Password"
+                        : "Generate Compat Password"
+                    }
+                    icon={Icon.Shield}
+                    shortcut={{ modifiers: ["cmd"], key: "g" }}
+                    onAction={() => {
+                      startProcess(
+                        selectedDomain,
+                        undefined,
+                        domainOnlyEntry.version,
+                        isNewDomain,
+                        !domainOnlyEntry.compat,
                       );
                     }}
                   />
@@ -949,6 +1155,22 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                       onAction={addNewUsernameAction}
                     />
                   )}
+                  <Action
+                    title={
+                      domainOnlyEntry.compat
+                        ? "Disable Compat Mode"
+                        : "Enable Compat Mode"
+                    }
+                    icon={Icon.Switch}
+                    shortcut={{ modifiers: ["cmd"], key: "t" }}
+                    onAction={() =>
+                      handleToggleCompat(
+                        selectedDomain,
+                        "",
+                        domainOnlyEntry.compat,
+                      )
+                    }
+                  />
                   <Action
                     title="Bump Version"
                     icon={Icon.Plus}

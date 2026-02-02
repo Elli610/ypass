@@ -538,12 +538,14 @@ export default function Command() {
 
   // Start password generation with specific domain, optional username, and version
   // isNewUsername: if true, don't use --skip-state so CLI can add the new user to state
+  // forceCompat: if true, pass --compat to generate a compat password (one-shot override)
   const startProcess = useCallback(
     (
       domain: string,
       username?: string,
       version?: number,
       isNewUsername?: boolean,
+      forceCompat?: boolean,
     ) => {
       // Prevent multiple simultaneous processes
       if (processRef.current) {
@@ -619,6 +621,9 @@ export default function Command() {
       }
       if (username) {
         args.push("-u", username);
+      }
+      if (forceCompat) {
+        args.push("--compat");
       }
 
       const proc = spawn(PASSWORD_GENERATOR_PATH, args, {
@@ -929,13 +934,27 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                 actions={
                   <ActionPanel>
                     <Action
-                      title="Select Username"
+                      title="Generate Password"
                       onAction={() => {
                         startProcess(
                           selectedDomain,
                           entry.name,
                           entry.version,
                           false,
+                        );
+                      }}
+                    />
+                    <Action
+                      title="Generate Compat Password"
+                      icon={Icon.Shield}
+                      shortcut={{ modifiers: ["cmd"], key: "g" }}
+                      onAction={() => {
+                        startProcess(
+                          selectedDomain,
+                          entry.name,
+                          entry.version,
+                          false,
+                          true,
                         );
                       }}
                     />
@@ -999,6 +1018,20 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                     onAction={addNewUsernameAction}
                   />
                   <Action
+                    title="Generate Compat Password"
+                    icon={Icon.Shield}
+                    shortcut={{ modifiers: ["cmd"], key: "g" }}
+                    onAction={() => {
+                      startProcess(
+                        selectedDomain,
+                        usernameSearch,
+                        1,
+                        true,
+                        true,
+                      );
+                    }}
+                  />
+                  <Action
                     title="Back to Domains"
                     icon={Icon.ArrowLeft}
                     shortcut={{ modifiers: ["cmd"], key: "backspace" }}
@@ -1032,6 +1065,20 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
                         undefined,
                         domainOnlyEntry.version,
                         isNewDomain,
+                      );
+                    }}
+                  />
+                  <Action
+                    title="Generate Compat Password"
+                    icon={Icon.Shield}
+                    shortcut={{ modifiers: ["cmd"], key: "g" }}
+                    onAction={() => {
+                      startProcess(
+                        selectedDomain,
+                        undefined,
+                        domainOnlyEntry.version,
+                        isNewDomain,
+                        true,
                       );
                     }}
                   />

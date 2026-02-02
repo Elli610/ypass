@@ -273,10 +273,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let normalized_domain = if args.domain.is_none() || args.interactive {
-        select_domain(&state)?
-    } else {
-        normalize_domain(args.domain.as_ref().unwrap())
+    let normalized_domain = match args.domain {
+        Some(ref domain) if !args.interactive => normalize_domain(domain),
+        _ => select_domain(&state)?,
     };
 
     // Handle --add-user command

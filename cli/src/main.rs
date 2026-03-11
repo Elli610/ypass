@@ -251,8 +251,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Derive state encryption key
     let state_key = derive_state_key(&state_key_seed)?;
 
-    // Load or create state
-    let mut state = load_state(&state_key).unwrap_or_default();
+    // Load or create state (fail loudly if state file exists but can't be decrypted,
+    // to prevent silently overwriting it with an empty state)
+    let mut state = load_state(&state_key)?;
     let mut state_modified = false;
 
     // Handle --list command

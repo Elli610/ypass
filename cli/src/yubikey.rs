@@ -48,7 +48,11 @@ pub fn get_yubikey_response(
             .output()?;
 
         if output.status.success() {
-            let hex_response = String::from_utf8(output.stdout)?.trim().to_string();
+            let mut stdout = Zeroizing::new(output.stdout);
+            let mut hex_response = Zeroizing::new(String::from_utf8(std::mem::take(&mut *stdout))?);
+            let trimmed = hex_response.trim().to_string();
+            zeroize::Zeroize::zeroize(&mut *hex_response);
+            let hex_response = Zeroizing::new(trimmed);
             if !hex_response.is_empty() {
                 let bytes = hex_decode(&hex_response)?;
                 return Ok(Zeroizing::new(bytes));
@@ -101,28 +105,103 @@ pub fn read_password_no_echo() -> Result<Zeroizing<String>, Box<dyn std::error::
 }
 
 #[cfg(not(target_os = "windows"))]
+mod termios_guard {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Global storage for original termios so the signal handler can restore it.
+    /// Safe because: only accessed from main thread (set/clear) and signal handler
+    /// (read), and libc::termios is a plain C struct with no pointers.
+    static ECHO_DISABLED: AtomicBool = AtomicBool::new(false);
+    static mut SAVED_TERMIOS: std::mem::MaybeUninit<libc::termios> =
+        std::mem::MaybeUninit::uninit();
+    static mut PREV_SIGINT: libc::sighandler_t = libc::SIG_DFL;
+    static mut PREV_SIGTERM: libc::sighandler_t = libc::SIG_DFL;
+
+    /// RAII guard that restores terminal echo on drop and cleans up signal handlers.
+    pub struct EchoGuard {
+        fd: i32,
+    }
+
+    impl EchoGuard {
+        pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let fd = libc::STDIN_FILENO;
+
+            // Save current terminal settings
+            let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+            if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
+                return Err("Failed to get terminal attributes".into());
+            }
+            let original = unsafe { termios.assume_init() };
+
+            // Store globally for signal handler access
+            unsafe { SAVED_TERMIOS = std::mem::MaybeUninit::new(original) };
+
+            // Install signal handlers before disabling echo
+            unsafe {
+                PREV_SIGINT = libc::signal(
+                    libc::SIGINT,
+                    restore_and_reraise as *const () as libc::sighandler_t,
+                );
+                PREV_SIGTERM = libc::signal(
+                    libc::SIGTERM,
+                    restore_and_reraise as *const () as libc::sighandler_t,
+                );
+            }
+
+            // Disable echo
+            let mut noecho = original;
+            noecho.c_lflag &= !libc::ECHO;
+            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &noecho) } != 0 {
+                // Restore signal handlers on failure
+                unsafe {
+                    libc::signal(libc::SIGINT, PREV_SIGINT);
+                    libc::signal(libc::SIGTERM, PREV_SIGTERM);
+                }
+                return Err("Failed to disable terminal echo".into());
+            }
+
+            ECHO_DISABLED.store(true, Ordering::SeqCst);
+            Ok(EchoGuard { fd })
+        }
+    }
+
+    impl Drop for EchoGuard {
+        fn drop(&mut self) {
+            if ECHO_DISABLED.swap(false, Ordering::SeqCst) {
+                let original = unsafe { SAVED_TERMIOS.assume_init() };
+                unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &original) };
+            }
+            // Restore previous signal handlers
+            unsafe {
+                libc::signal(libc::SIGINT, PREV_SIGINT);
+                libc::signal(libc::SIGTERM, PREV_SIGTERM);
+            }
+        }
+    }
+
+    /// Signal handler: restore terminal, then re-raise with default handler.
+    extern "C" fn restore_and_reraise(sig: libc::c_int) {
+        if ECHO_DISABLED.swap(false, Ordering::SeqCst) {
+            let original = unsafe { SAVED_TERMIOS.assume_init() };
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+        }
+        // Re-raise with default handler so the process exits with correct status
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn read_password_unix() -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
-    let output = Command::new("stty")
-        .args(["-g"])
-        .stdin(Stdio::inherit())
-        .output()?;
-
-    let saved_settings = String::from_utf8(output.stdout)?.trim().to_string();
-
-    Command::new("stty")
-        .args(["-echo"])
-        .stdin(Stdio::inherit())
-        .status()?;
+    let _guard = termios_guard::EchoGuard::new()?;
 
     let mut password = Zeroizing::new(String::new());
-    let result = io::stdin().read_line(&mut password);
+    io::stdin().read_line(&mut password)?;
 
-    let _ = Command::new("stty")
-        .arg(&saved_settings)
-        .stdin(Stdio::inherit())
-        .status();
-
-    result?;
+    // Guard restores echo on drop (including early returns and signals)
+    drop(_guard);
 
     if password.ends_with('\n') {
         password.pop();

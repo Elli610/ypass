@@ -140,6 +140,15 @@ function parseDomains(output: string): DomainEntry[] {
   return entries;
 }
 
+// Patterns that indicate YubiKey is not connected/available
+const YUBIKEY_NOT_FOUND_PATTERNS = [
+  "no yubikey found",
+  "yubikey not present",
+  "device not found",
+  "timeout waiting for yubikey",
+  "challenge-response failed",
+];
+
 export default function Command() {
   const PASSWORD_GENERATOR_PATH = getPasswordGeneratorPath();
 
@@ -154,6 +163,7 @@ export default function Command() {
   const [pinError, setPinError] = useState<boolean>(false);
   const [searchText, setSearchText] = useState<string>("");
   const [usernameSearch, setUsernameSearch] = useState<string>("");
+  const [yubiKeyMissing, setYubiKeyMissing] = useState<boolean>(false);
 
   const processRef = useRef<ChildProcess | null>(null);
   const outputBufferRef = useRef<string>("");
@@ -182,6 +192,7 @@ export default function Command() {
     outputBufferRef.current = "";
     setOutput("");
     setError("");
+    setYubiKeyMissing(false);
 
     const proc = spawn(PASSWORD_GENERATOR_PATH, ["--list"], {
       env: { ...process.env, PATH: MACOS_PATH },
@@ -197,6 +208,12 @@ export default function Command() {
     proc.stderr?.on("data", (data: Buffer) => {
       const text = data.toString();
       outputBufferRef.current += text;
+      const bufferLower = outputBufferRef.current.toLowerCase();
+
+      // Check if YubiKey is not connected
+      if (YUBIKEY_NOT_FOUND_PATTERNS.some((p) => bufferLower.includes(p))) {
+        setYubiKeyMissing(true);
+      }
 
       if (text.includes("Touch YubiKey to unlock state")) {
         setStage("unlock-touch");
@@ -622,6 +639,7 @@ export default function Command() {
       outputBufferRef.current = "";
       setOutput("");
       setError("");
+      setYubiKeyMissing(false);
 
       // Build args based on whether this is a new username
       // forceCompat needs state access only if compat isn't already saved
@@ -696,6 +714,12 @@ export default function Command() {
 
         // Check accumulated buffer to determine stage (handles buffering issues)
         const buffer = outputBufferRef.current;
+        const bufferLower = buffer.toLowerCase();
+
+        // Check if YubiKey is not connected
+        if (YUBIKEY_NOT_FOUND_PATTERNS.some((p) => bufferLower.includes(p))) {
+          setYubiKeyMissing(true);
+        }
 
         if (buffer.includes("Enter PIN:")) {
           setStage("enter-pin");
@@ -796,11 +820,19 @@ export default function Command() {
   if (stage === "loading-domains") {
     return (
       <Detail
-        markdown={`# Touch YubiKey
+        markdown={
+          yubiKeyMissing
+            ? `# YubiKey Not Detected
+
+Please insert your YubiKey and touch it to unlock state.
+
+*Waiting for YubiKey...*`
+            : `# Touch YubiKey
 
 Touch your YubiKey to unlock state and load domains...
 
-*Waiting for hardware interaction...*`}
+*Waiting for hardware interaction...*`
+        }
       />
     );
   }
@@ -912,13 +944,23 @@ Touch your YubiKey to unlock state and load domains...
   if (stage === "unlock-touch") {
     return (
       <Detail
-        markdown={`# Touch YubiKey
+        markdown={
+          yubiKeyMissing
+            ? `# YubiKey Not Detected
+
+Please insert your YubiKey and touch it.
+
+${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
+
+*Waiting for YubiKey...*`
+            : `# Touch YubiKey
 
 Touch your YubiKey to unlock state...
 
 ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
 
-*Waiting for hardware interaction...*`}
+*Waiting for hardware interaction...*`
+        }
       />
     );
   }
@@ -1196,13 +1238,23 @@ ${selectedDomain ? `**Domain:** \`${selectedDomain}\`` : ""}
   if (stage === "password-touch") {
     return (
       <Detail
-        markdown={`# Touch YubiKey Again
+        markdown={
+          yubiKeyMissing
+            ? `# YubiKey Not Detected
+
+Please insert your YubiKey and touch it to generate password.
+
+**Domain:** \`${selectedDomain}\`${selectedUsername ? `\n**Username:** \`${selectedUsername}\`` : ""}
+
+*Waiting for YubiKey...*`
+            : `# Touch YubiKey Again
 
 Touch your YubiKey to generate password...
 
 **Domain:** \`${selectedDomain}\`${selectedUsername ? `\n**Username:** \`${selectedUsername}\`` : ""}
 
-*Waiting for hardware interaction...*`}
+*Waiting for hardware interaction...*`
+        }
       />
     );
   }

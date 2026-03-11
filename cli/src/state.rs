@@ -206,7 +206,11 @@ pub fn save_state(state: &State, key: &[u8; 32]) -> Result<(), Box<dyn std::erro
     output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&ciphertext);
 
-    fs::write(&path, output)?;
+    // Write to a temporary file then atomically rename, so a crash mid-write
+    // cannot leave a corrupted/truncated state file
+    let tmp_path = path.with_extension("enc.tmp");
+    fs::write(&tmp_path, output)?;
+    fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 

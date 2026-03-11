@@ -27,6 +27,8 @@ clap_complete = "4"
 getrandom = "0.3.4"
 # Interactive readline with Tab completion
 rustyline = "17.0.2"
+# POSIX terminal control (termios) and signal handling
+libc = "0.2"
 
 [profile.release]
 opt-level = 3
